@@ -1,0 +1,26 @@
+{
+  "name": "kup-patlat",
+  "version": "0.1.0",
+  "description": "Küp Patlat: Toon Blast tarzı mobil bulmaca oyunu (HTML5 + Capacitor)",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node tools/serve.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "balance": "node tests/simulate.mjs",
+    "calibrate": "node tests/simulate.mjs --calibrate",
+    "android:add": "cap add android",
+    "android:sync": "cap sync android",
+    "android:open": "cap open android",
+    "ios:add": "cap add ios",
+    "ios:open": "cap open ios"
+  },
+  "dependencies": {
+    "@capacitor/android": "^7.0.0",
+    "@capacitor/core": "^7.0.0",
+    "@capacitor/ios": "^7.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^7.0.0"
+  }
+}

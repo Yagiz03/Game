@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#5b2bd6">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Küp Patlat</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div id="app">
+    <section id="home" class="screen active">
+      <header class="topbar">
+        <button id="lives-pill" class="pill"><span>❤️</span><b id="lives">5</b><small id="lives-timer">Dolu</small></button>
+        <div class="pill"><span>🪙</span><b id="coins">0</b></div>
+        <button id="btn-settings" class="icon-btn" aria-label="Ayarlar">⚙️</button>
+      </header>
+      <h1 class="logo">Küp<span>Patlat</span></h1>
+      <div class="map-wrap"><div id="map" class="map"></div></div>
+      <footer class="home-footer">
+        <button id="btn-daily" class="btn side">🎁<small>Günlük</small></button>
+        <button id="btn-play" class="btn primary play">Seviye 1</button>
+        <button id="btn-shop" class="btn side">🛒<small>Mağaza</small></button>
+      </footer>
+    </section>
+
+    <section id="game" class="screen">
+      <header class="hud">
+        <button id="btn-pause" class="icon-btn" aria-label="Duraklat">⏸</button>
+        <div class="hud-panel">
+          <div class="hud-goals" id="hud-goals"></div>
+          <div class="hud-moves"><small>Hamle</small><b id="hud-moves">0</b></div>
+        </div>
+        <div class="hud-level"><small>Seviye</small><b id="hud-level">1</b></div>
+      </header>
+      <div id="board-wrap"><canvas id="board"></canvas></div>
+      <footer class="boosters">
+        <button id="bst-hammer" class="booster" aria-label="Çekiç">🔨<span class="count" id="cnt-hammer">0</span></button>
+        <button id="bst-shuffle" class="booster" aria-label="Karıştır">🔀<span class="count" id="cnt-shuffle">0</span></button>
+      </footer>
+    </section>
+
+    <div id="modal" class="modal hidden"><div id="modal-card" class="modal-card"></div></div>
+    <div id="toast" class="toast"></div>
+  </div>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

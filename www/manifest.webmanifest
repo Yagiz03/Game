@@ -1,0 +1,13 @@
+{
+  "name": "Küp Patlat",
+  "short_name": "Küp Patlat",
+  "start_url": ".",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#5b2bd6",
+  "theme_color": "#5b2bd6",
+  "lang": "tr",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
