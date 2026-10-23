@@ -1,13 +1,16 @@
-// Balance tool: a simple bot plays every level many times.
+// Balance tool: a bot plays every level many times.
 //   node tests/simulate.mjs [runs]              report bot win rate per level
 //   node tests/simulate.mjs --calibrate [runs]  rewrite www/js/moves.js so the
 //                                                bot win rate follows targetRate()
+// The bot tries every legal move on a copy of the board (including the
+// cascades it triggers) and keeps the one that helps the goals most.
 import { writeFileSync } from 'node:fs';
 import { Board, isBooster } from '../www/js/board.js';
 import { getLevel, TOTAL_LEVELS } from '../www/js/levels.js';
 
 const calibrate = process.argv.includes('--calibrate');
-const runs = Number(process.argv.filter((a) => !a.startsWith('--'))[2] || (calibrate ? 300 : 40));
+const runs = Number(process.argv.filter((a) => !a.startsWith('--'))[2] || (calibrate ? 120 : 30));
+const CAP = 80;
 
 // Difficulty curve: easy start, slow ramp, a breather after every hard level.
 function targetRate(n) {
@@ -17,71 +20,61 @@ function targetRate(n) {
   return Math.min(0.98, Math.max(0.35, rate));
 }
 
-// Scores a booster by what it would hit, like a player aiming it at goals.
-function boosterScore(goals, b, r, c, cell) {
-  if (b.boosterGroup(r, c).length > 1) return 60;
-  let cells;
-  if (cell.kind === 'rocket') cells = b.line(r, c, cell.dir);
-  else if (cell.kind === 'bomb') cells = b.area(r, c, 2);
-  else return 40;
-  let score = 4;
-  for (const [y, x] of cells) {
-    const n = b.get(y, x);
-    if (n?.kind === 'box' && goals.some((g) => g.type === 'box' && g.left > 0)) score += 14;
-    else if (n?.kind === 'cube' && goals.some((g) => g.type === 'color' && g.color === n.color && g.left > 0)) score += 2;
-  }
-  return score;
+function legalMoves(b) {
+  const moves = b.validSwaps().map(([r1, c1, r2, c2]) => ({ swap: [r1, c1, r2, c2] }));
+  b.forEach((cell, r, c) => { if (isBooster(cell)) moves.push({ tap: [r, c] }); });
+  return moves;
 }
 
-function goalScore(level, goals, b, r, c) {
-  const cell = b.get(r, c);
-  if (isBooster(cell)) return boosterScore(goals, b, r, c, cell);
-  const group = b.findGroup(r, c);
-  if (group.length < 2) return -1;
-  let score = group.length;
-  const colorGoal = goals.find((g) => g.type === 'color' && g.color === cell.color && g.left > 0);
-  if (colorGoal) score += group.length * 2;
-  const boxGoal = goals.find((g) => g.type === 'box' && g.left > 0);
-  if (boxGoal) {
-    for (const [y, x] of group) {
-      for (const [dy, dx] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-        if (b.get(y + dy, x + dx)?.kind === 'box') score += 12;
-      }
-      // Clearing cells near a box churns its neighbours, like a player would.
-      for (let yy = y + 1; yy < b.rows; yy++) {
-        for (const xx of [x - 1, x, x + 1]) {
-          if (b.get(yy, xx)?.kind === 'box') { score += 2; yy = b.rows; break; }
-        }
-      }
-    }
+// Plays a move and every cascade after it; returns what was collected.
+function apply(b, move) {
+  const total = { colors: [0, 0, 0, 0, 0], boxes: 0, made: 0 };
+  let res;
+  if (move.tap) {
+    res = b.tap(...move.tap);
+  } else {
+    b.swapCells(...move.swap);
+    res = b.resolveSwap(...move.swap);
   }
-  if (group.length >= 5) score += 6;
-  return score;
+  while (res) {
+    res.collected.colors.forEach((n, i) => { total.colors[i] += n; });
+    total.boxes += res.collected.boxes;
+    if (res.created) total.made++;
+    b.applyGravity();
+    res = b.clearMatches();
+  }
+  return total;
 }
 
-function play(level, moveLimit = level.moves) {
+function score(goals, got) {
+  let s = got.made * 3;
+  for (const g of goals) {
+    if (g.left <= 0) continue;
+    const n = g.type === 'box' ? got.boxes : got.colors[g.color];
+    s += Math.min(n, g.left) * (g.type === 'box' ? 4 : 1);
+  }
+  return s + Math.random() * 0.5;
+}
+
+function play(level, moveLimit) {
   const b = Board.fromLayout(level.layout, level.colors);
   const goals = level.goals.map((g) => ({ ...g, left: g.count }));
-  let moves = moveLimit;
-  while (moves > 0) {
+  for (let used = 1; used <= moveLimit; used++) {
     let best = null;
     let bestScore = -1;
-    b.forEach((_, r, c) => {
-      const s = goalScore(level, goals, b, r, c);
-      if (s > bestScore) { bestScore = s; best = [r, c]; }
-    });
-    if (!best || bestScore < 0) { b.shuffle(); continue; }
-    const res = b.tap(...best);
-    moves--;
-    for (const g of goals) {
-      const got = g.type === 'box' ? res.collected.boxes : res.collected.colors[g.color];
-      g.left = Math.max(0, g.left - got);
+    for (const move of legalMoves(b)) {
+      const s = score(goals, apply(b.clone(), move));
+      if (s > bestScore) { bestScore = s; best = move; }
     }
-    b.applyGravity();
-    if (goals.every((g) => g.left === 0)) return { won: true, movesLeft: moves };
+    if (!best) { b.shuffle(); used--; continue; }
+    const got = apply(b, best);
+    for (const g of goals) {
+      g.left = Math.max(0, g.left - (g.type === 'box' ? got.boxes : got.colors[g.color]));
+    }
+    if (goals.every((g) => g.left === 0)) return used;
     if (!b.hasMoves()) b.shuffle();
   }
-  return { won: false, movesLeft: 0 };
+  return Infinity;
 }
 
 if (calibrate) {
@@ -89,10 +82,7 @@ if (calibrate) {
   for (let n = 1; n <= TOTAL_LEVELS; n++) {
     const level = getLevel(n);
     const used = [];
-    for (let i = 0; i < runs; i++) {
-      const result = play(level, 120);
-      used.push(result.won ? 120 - result.movesLeft : Infinity);
-    }
+    for (let i = 0; i < runs; i++) used.push(play(level, CAP));
     used.sort((a, b) => a - b);
     const moves = Math.min(40, Math.max(10, used[Math.ceil(targetRate(n) * runs) - 1]));
     table.push(moves);
@@ -104,20 +94,13 @@ if (calibrate) {
   process.exit(0);
 }
 
-const rows = [];
+let total = 0;
 for (let n = 1; n <= TOTAL_LEVELS; n++) {
   const level = getLevel(n);
   let wins = 0;
-  let left = 0;
-  for (let i = 0; i < runs; i++) {
-    const result = play(level);
-    if (result.won) { wins++; left += result.movesLeft; }
-  }
+  for (let i = 0; i < runs; i++) if (play(level, level.moves) <= level.moves) wins++;
+  total += wins / runs;
   const goals = level.goals.map((g) => (g.type === 'box' ? `box×${g.count}` : `c${g.color}×${g.count}`)).join(' ');
-  rows.push({ n, rate: wins / runs, avgLeft: wins ? (left / wins).toFixed(1) : '-', moves: level.moves, goals });
+  console.log(`L${String(n).padStart(2)}  win ${String(Math.round((wins / runs) * 100)).padStart(3)}%  moves ${level.moves}  ${goals}`);
 }
-for (const r of rows) {
-  console.log(`L${String(r.n).padStart(2)}  win ${(r.rate * 100).toFixed(0).padStart(3)}%  left ${String(r.avgLeft).padStart(4)}  moves ${r.moves}  ${r.goals}`);
-}
-const avg = rows.reduce((s, r) => s + r.rate, 0) / rows.length;
-console.log(`average win rate ${(avg * 100).toFixed(1)}%`);
+console.log(`average win rate ${((total / TOTAL_LEVELS) * 100).toFixed(1)}%`);

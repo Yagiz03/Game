@@ -40,6 +40,8 @@ const PATTERNS = {
 };
 const PATTERN_ORDER = ['band', 'pyramid', 'pillars', 'checker', 'sides', 'ring'];
 
+const COLOR_SCALE = 2.5;
+
 const TUTORIAL = {
   1: { colors: 4, cols: 7, goals: [{ type: 'color', color: 0, count: 12 }] },
   2: { colors: 4, cols: 7, goals: [{ type: 'color', color: 1, count: 15 }, { type: 'color', color: 3, count: 15 }] },
@@ -76,14 +78,16 @@ export function getLevel(n) {
     layout.push(line);
   }
 
-  let goals = hand?.goals ? hand.goals.map((g) => ({ ...g })) : null;
+  // Match-3 swaps with cascades collect many cubes per move, so colour
+  // goals are scaled up from the base numbers below.
+  let goals = hand?.goals ? hand.goals.map((g) => ({ ...g, count: Math.round((g.count * COLOR_SCALE) / 5) * 5 })) : null;
   if (!goals) {
     goals = [];
     const colorGoals = hasBoxes ? (rng() < 0.5 ? 1 : 0) : 2 + (rng() < t ? 1 : 0);
     const picked = new Set();
     while (picked.size < colorGoals) picked.add(Math.floor(rng() * colors));
     for (const color of picked) {
-      goals.push({ type: 'color', color, count: Math.round((15 + t * 12 + rng() * 5) / 5) * 5 });
+      goals.push({ type: 'color', color, count: Math.round(((15 + t * 12 + rng() * 5) * COLOR_SCALE) / 5) * 5 });
     }
   }
   if (hasBoxes) goals.push({ type: 'box', count: boxCount });

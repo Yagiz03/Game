@@ -31,7 +31,10 @@ export class GameSession {
     this.streakBonus = this.placeStreakBoosters(app.state.streak || 0);
     this.renderer.setBoard(this.board);
     this.renderer.onTap = (r, c) => this.tap(r, c);
+    this.renderer.onSwipe = (r, c, dr, dc) => this.swipe(r, c, r + dr, c + dc);
     this.renderer.armed = false;
+    this.selectedPos = null;
+    this.cascade = 0;
     this.buildHud();
     this.hintTimer = setInterval(() => this.checkHint(), 1000);
     if (this.streakBonus) setTimeout(() => app.toast(`🔥 ${app.state.streak} galibiyet serisi: başlangıç bonusu!`), 900);
@@ -57,7 +60,9 @@ export class GameSession {
     this.destroyed = true;
     clearInterval(this.hintTimer);
     this.renderer.onTap = null;
+    this.renderer.onSwipe = null;
     this.renderer.hint = null;
+    this.renderer.selected = null;
     this.renderer.armed = false;
   }
 
@@ -109,16 +114,62 @@ export class GameSession {
       return;
     }
 
-    const res = this.board.tap(r, c);
-    if (!res) {
-      this.renderer.shake(r, c);
-      sfx.play('nope');
+    const cell = this.board.get(r, c);
+    if (isBooster(cell)) {
+      this.select(null);
+      this.moves--;
+      this.movesUsed++;
+      const res = this.board.tap(r, c);
+      this.cascade = 0;
+      this.playSounds(res);
+      this.resolve(res);
       return;
     }
+    if (cell?.kind !== 'cube') return;
+    // Tap one cube, then a neighbour, as an alternative to swiping.
+    const sel = this.selectedPos;
+    if (sel && Math.abs(sel[0] - r) + Math.abs(sel[1] - c) === 1) {
+      this.swipe(sel[0], sel[1], r, c);
+    } else if (sel && sel[0] === r && sel[1] === c) {
+      this.select(null);
+    } else {
+      this.select([r, c]);
+    }
+  }
+
+  select(pos) {
+    this.selectedPos = pos;
+    this.renderer.selected = pos ? this.board.get(...pos) : null;
+  }
+
+  swipe(r1, c1, r2, c2) {
+    if (this.state !== 'play' || this.armed) return;
+    this.clearHint();
+    this.select(null);
+    const { board, renderer } = this;
+    if (!board.canSwap(r1, c1, r2, c2)) return;
+    const a = board.grid[r1][c1];
+    const b = board.grid[r2][c2];
+    if (!board.isValidSwap(r1, c1, r2, c2)) {
+      renderer.bounce(a, r2, c2);
+      renderer.bounce(b, r1, c1);
+      this.app.sfx.play('nope');
+      return;
+    }
+    board.swapCells(r1, c1, r2, c2);
+    renderer.slide(a, r1, c1);
+    renderer.slide(b, r2, c2);
+    this.state = 'busy';
     this.moves--;
     this.movesUsed++;
-    this.playSounds(res);
-    this.resolve(res);
+    this.updateHud();
+    renderer.after(0.17, () => {
+      if (this.destroyed) return;
+      const res = board.resolveSwap(r1, c1, r2, c2);
+      this.cascade = 0;
+      this.playSounds(res);
+      this.resolve(res);
+    });
   }
 
   playSounds(res) {
@@ -127,7 +178,7 @@ export class GameSession {
     if (types.has('nuke') || types.has('bomb')) { sfx.play('bomb'); vibrate(40); }
     if (types.has('disco')) sfx.play('disco');
     if (types.has('rocket') || types.has('cross') || types.has('bigcross')) { sfx.play('rocket'); vibrate(20); }
-    if (!types.size) sfx.play('pop', res.groupSize);
+    if (!types.size) sfx.play('pop', res.groupSize + this.cascade * 2);
     if (res.created) sfx.play('create');
     if (res.collected.boxes || res.damaged.length) sfx.play('box');
   }
@@ -148,8 +199,24 @@ export class GameSession {
     this.renderer.after(wait, () => {
       if (this.destroyed) return;
       this.renderer.spawn(this.board.applyGravity());
-      this.waitSettle();
+      this.waitSettle(() => this.afterGravity());
     });
+  }
+
+  // Falling cubes can line up on their own: clear those too, for free.
+  afterGravity() {
+    const res = this.board.clearMatches();
+    if (!res) {
+      this.afterSettle();
+      return;
+    }
+    this.cascade++;
+    if (this.cascade >= 2) {
+      const { w, h } = this.renderer;
+      this.renderer.floatText(`ZİNCİR x${this.cascade}`, w / 2, h * 0.45, '#9df5b9');
+    }
+    this.playSounds(res);
+    this.resolve(res);
   }
 
   waitSettle(done = () => this.afterSettle()) {
@@ -212,13 +279,16 @@ export class GameSession {
 
     const fireNext = () => {
       if (this.destroyed) return;
-      let target = null;
-      this.board.forEach((cell, r, c) => { if (!target && isBooster(cell)) target = [r, c]; });
-      if (!target || fired++ > 40) {
-        this.app.levelWon(this.level.number, stars, movesLeft);
-        return;
+      let res = this.board.clearMatches();
+      if (!res) {
+        let target = null;
+        this.board.forEach((cell, r, c) => { if (!target && isBooster(cell)) target = [r, c]; });
+        if (!target || fired++ > 40) {
+          this.app.levelWon(this.level.number, stars, movesLeft);
+          return;
+        }
+        res = this.board.tap(...target);
       }
-      const res = this.board.tap(...target);
       this.playSounds(res);
       this.renderer.after(this.renderer.playResult(res), () => {
         if (this.destroyed) return;
@@ -289,17 +359,14 @@ export class GameSession {
     this.updateHud();
   }
 
-  // After a few idle seconds, gently bounce the biggest group as a hint.
+  // After a few idle seconds, gently bounce a pair that can be swapped.
   checkHint() {
     if (this.state !== 'play' || this.renderer.hint) return;
     if (++this.idle < 6) return;
-    let best = [];
-    this.board.forEach((cell, r, c) => {
-      if (cell?.kind !== 'cube') return;
-      const group = this.board.findGroup(r, c);
-      if (group.length > best.length) best = group;
-    });
-    if (best.length >= 2) this.renderer.hint = new Set(best.map(([r, c]) => this.board.grid[r][c]));
+    const swaps = this.board.validSwaps();
+    if (!swaps.length) return;
+    const [r1, c1, r2, c2] = swaps[Math.floor(Math.random() * swaps.length)];
+    this.renderer.hint = new Set([this.board.grid[r1][c1], this.board.grid[r2][c2]]);
   }
 
   clearHint() {

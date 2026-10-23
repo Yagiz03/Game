@@ -1,5 +1,10 @@
 // Board logic for Küp Patlat. Pure state and rules, no DOM: the renderer reads
 // the cell objects directly and keeps its own animation fields on them.
+//
+// Match-3 rules: swap two neighbouring cells; 3+ cubes of one colour in a
+// row or column clear. A line of 4 leaves a rocket, an L/T shape a bomb and
+// a line of 5 a disco ball. Swapping a booster fires it, swapping two
+// boosters fires a combo.
 
 let nextId = 1;
 const make = (props) => ({ id: nextId++, ...props });
@@ -13,10 +18,8 @@ export const disco = (color) => make({ kind: 'disco', color });
 export const isBooster = (cell) =>
   !!cell && (cell.kind === 'rocket' || cell.kind === 'bomb' || cell.kind === 'disco');
 
-// Group sizes that leave a booster behind (same thresholds as the genre standard).
-export const ROCKET_MIN = 5;
-export const BOMB_MIN = 7;
-export const DISCO_MIN = 9;
+const isCube = (cell) => !!cell && cell.kind === 'cube';
+const sameColor = (a, b) => isCube(a) && isCube(b) && a.color === b.color;
 
 export const MAX_COLORS = 5;
 
@@ -41,8 +44,15 @@ export class Board {
       }
     }
     board.fill();
-    if (!board.hasMoves()) board.shuffle();
+    if (board.findMatches().length || !board.hasMoves()) board.shuffle();
     return board;
+  }
+
+  // Copy for look-ahead (used by the balance bot). Cells are shallow copies.
+  clone() {
+    const b = new Board(this.rows, this.cols, this.numColors, this.rng);
+    b.grid = this.grid.map((row) => row.map((cell) => (cell ? { ...cell } : null)));
+    return b;
   }
 
   cellFromChar(ch) {
@@ -71,10 +81,25 @@ export class Board {
     return Math.floor(this.rng() * this.numColors);
   }
 
+  // A colour that does not complete a line of 3 with the cells to the left
+  // and above (used to build starting boards without free matches).
+  safeColor(r, c) {
+    const banned = new Set();
+    const l1 = this.get(r, c - 1);
+    const l2 = this.get(r, c - 2);
+    if (sameColor(l1, l2)) banned.add(l1.color);
+    const u1 = this.get(r - 1, c);
+    const u2 = this.get(r - 2, c);
+    if (sameColor(u1, u2)) banned.add(u1.color);
+    const options = [];
+    for (let k = 0; k < this.numColors; k++) if (!banned.has(k)) options.push(k);
+    return options[Math.floor(this.rng() * options.length)];
+  }
+
   fill() {
     for (let r = 0; r < this.rows; r++) {
       for (let c = 0; c < this.cols; c++) {
-        if (!this.grid[r][c]) this.grid[r][c] = cube(this.randomColor());
+        if (!this.grid[r][c]) this.grid[r][c] = cube(this.safeColor(r, c));
       }
     }
   }
@@ -85,90 +110,250 @@ export class Board {
     }
   }
 
-  flood(r, c, match) {
-    if (!match(this.get(r, c))) return [];
-    const seen = new Set([r * this.cols + c]);
+  // Length of the same-colour line through (r, c) in each direction.
+  lineAt(r, c) {
+    const cell = this.get(r, c);
+    if (!isCube(cell)) return { h: 0, v: 0 };
+    let h = 1;
+    for (let x = c - 1; sameColor(this.get(r, x), cell); x--) h++;
+    for (let x = c + 1; sameColor(this.get(r, x), cell); x++) h++;
+    let v = 1;
+    for (let y = r - 1; sameColor(this.get(y, c), cell); y--) v++;
+    for (let y = r + 1; sameColor(this.get(y, c), cell); y++) v++;
+    return { h, v };
+  }
+
+  makesMatch(r, c) {
+    const { h, v } = this.lineAt(r, c);
+    return h >= 3 || v >= 3;
+  }
+
+  canSwap(r1, c1, r2, c2) {
+    if (Math.abs(r1 - r2) + Math.abs(c1 - c2) !== 1) return false;
+    const a = this.get(r1, c1);
+    const b = this.get(r2, c2);
+    return !!a && !!b && a.kind !== 'box' && b.kind !== 'box';
+  }
+
+  swapCells(r1, c1, r2, c2) {
+    const tmp = this.grid[r1][c1];
+    this.grid[r1][c1] = this.grid[r2][c2];
+    this.grid[r2][c2] = tmp;
+  }
+
+  // A swap is legal if it involves a booster or creates a match.
+  isValidSwap(r1, c1, r2, c2) {
+    if (!this.canSwap(r1, c1, r2, c2)) return false;
+    if (isBooster(this.grid[r1][c1]) || isBooster(this.grid[r2][c2])) return true;
+    if (sameColor(this.grid[r1][c1], this.grid[r2][c2])) return false;
+    this.swapCells(r1, c1, r2, c2);
+    const ok = this.makesMatch(r1, c1) || this.makesMatch(r2, c2);
+    this.swapCells(r1, c1, r2, c2);
+    return ok;
+  }
+
+  validSwaps() {
     const out = [];
-    const stack = [[r, c]];
-    while (stack.length) {
-      const [y, x] = stack.pop();
-      out.push([y, x]);
-      for (const [dy, dx] of DIRS) {
-        const ny = y + dy;
-        const nx = x + dx;
-        const key = ny * this.cols + nx;
-        if (!seen.has(key) && match(this.get(ny, nx))) {
-          seen.add(key);
-          stack.push([ny, nx]);
-        }
+    for (let r = 0; r < this.rows; r++) {
+      for (let c = 0; c < this.cols; c++) {
+        if (this.isValidSwap(r, c, r, c + 1)) out.push([r, c, r, c + 1]);
+        if (this.isValidSwap(r, c, r + 1, c)) out.push([r, c, r + 1, c]);
       }
     }
     return out;
   }
 
-  findGroup(r, c) {
-    const start = this.get(r, c);
-    if (!start || start.kind !== 'cube') return [];
-    return this.flood(r, c, (n) => !!n && n.kind === 'cube' && n.color === start.color);
-  }
-
-  boosterGroup(r, c) {
-    return this.flood(r, c, isBooster);
-  }
-
   hasMoves() {
     for (let r = 0; r < this.rows; r++) {
       for (let c = 0; c < this.cols; c++) {
-        const cell = this.grid[r][c];
-        if (isBooster(cell)) return true;
-        if (cell && cell.kind === 'cube') {
-          const right = this.get(r, c + 1);
-          const down = this.get(r + 1, c);
-          if (right && right.kind === 'cube' && right.color === cell.color) return true;
-          if (down && down.kind === 'cube' && down.color === cell.color) return true;
-        }
+        if (this.isValidSwap(r, c, r, c + 1) || this.isValidSwap(r, c, r + 1, c)) return true;
       }
     }
     return false;
   }
 
-  // Reassigns colors among the existing cubes until a move exists. Cells keep
-  // their identity so the renderer can animate them in place.
+  // Reassigns colours among the existing cubes until the board has no free
+  // matches and at least one move. Cells keep their identity so the renderer
+  // can animate them in place.
   shuffle() {
     const cubes = [];
-    this.forEach((cell) => { if (cell && cell.kind === 'cube') cubes.push(cell); });
+    this.forEach((cell) => { if (isCube(cell)) cubes.push(cell); });
     const colors = cubes.map((cell) => cell.color);
-    for (let attempt = 0; attempt < 50; attempt++) {
+    for (let attempt = 0; attempt < 100; attempt++) {
       for (let i = colors.length - 1; i > 0; i--) {
         const j = Math.floor(this.rng() * (i + 1));
         [colors[i], colors[j]] = [colors[j], colors[i]];
       }
       cubes.forEach((cell, i) => { cell.color = colors[i]; });
-      if (this.hasMoves()) return true;
+      if (!this.findMatches().length && this.hasMoves()) return true;
     }
+    // Rare fallback: recolour every cube safely, then plant one sure move.
     for (let r = 0; r < this.rows; r++) {
       for (let c = 0; c < this.cols; c++) {
-        const cell = this.grid[r][c];
-        if (!cell || cell.kind !== 'cube') continue;
-        for (const n of [this.get(r, c + 1), this.get(r + 1, c)]) {
-          if (n && n.kind === 'cube') {
-            n.color = cell.color;
-            return true;
-          }
+        if (isCube(this.grid[r][c])) {
+          this.grid[r][c].color = -1;
+          this.grid[r][c].color = this.safeColor(r, c);
+        }
+      }
+    }
+    if (this.hasMoves()) return true;
+    for (let r = 0; r < this.rows; r++) {
+      for (let c = 0; c + 3 < this.cols; c++) {
+        const row = [0, 1, 2, 3].map((k) => this.grid[r][c + k]);
+        if (row.every(isCube)) {
+          // pattern X X . X: swapping the last two completes a line of 3
+          row[0].color = row[1].color = row[3].color = 0;
+          row[2].color = 1;
+          return true;
         }
       }
     }
     return false;
   }
 
-  // Player taps a cell. Returns a result describing everything that happened,
-  // or null when the tap is not a legal move.
+  // ---------- matches ----------
+
+  // Returns match groups: connected sets of horizontal/vertical runs of 3+.
+  findMatches() {
+    const runs = [];
+    for (let r = 0; r < this.rows; r++) {
+      let c = 0;
+      while (c < this.cols) {
+        let e = c + 1;
+        while (e < this.cols && sameColor(this.grid[r][e], this.grid[r][c])) e++;
+        if (isCube(this.grid[r][c]) && e - c >= 3) {
+          runs.push({ dir: 'h', cells: Array.from({ length: e - c }, (_, k) => [r, c + k]) });
+        }
+        c = e;
+      }
+    }
+    for (let c = 0; c < this.cols; c++) {
+      let r = 0;
+      while (r < this.rows) {
+        let e = r + 1;
+        while (e < this.rows && sameColor(this.grid[e][c], this.grid[r][c])) e++;
+        if (isCube(this.grid[r][c]) && e - r >= 3) {
+          runs.push({ dir: 'v', cells: Array.from({ length: e - r }, (_, k) => [r + k, c]) });
+        }
+        r = e;
+      }
+    }
+    // Merge runs that share a cell (L and T shapes).
+    const owner = new Map();
+    const groups = [];
+    for (const run of runs) {
+      const touching = new Set();
+      for (const [r, c] of run.cells) {
+        const g = owner.get(r * this.cols + c);
+        if (g) touching.add(g);
+      }
+      let group;
+      if (touching.size === 0) {
+        group = { runs: [], keys: new Set() };
+        groups.push(group);
+      } else {
+        const [first, ...rest] = touching;
+        group = first;
+        for (const other of rest) {
+          group.runs.push(...other.runs);
+          for (const k of other.keys) { group.keys.add(k); owner.set(k, group); }
+          groups.splice(groups.indexOf(other), 1);
+        }
+      }
+      group.runs.push(run);
+      for (const [r, c] of run.cells) {
+        const k = r * this.cols + c;
+        group.keys.add(k);
+        owner.set(k, group);
+      }
+    }
+    return groups;
+  }
+
+  // Clears every current match. `swapped` lists the cells the player just
+  // moved, so a booster is created where the player made the match.
+  clearMatches(swapped = []) {
+    const groups = this.findMatches();
+    if (!groups.length) return null;
+    const res = this.newResult();
+    const made = [];
+    for (const group of groups) {
+      const longest = group.runs.reduce((a, b) => (b.cells.length > a.cells.length ? b : a));
+      const hasH = group.runs.some((run) => run.dir === 'h');
+      const hasV = group.runs.some((run) => run.dir === 'v');
+      const [fr, fc] = longest.cells[0];
+      const color = this.grid[fr][fc].color;
+      let kind = null;
+      if (longest.cells.length >= 5) kind = 'disco';
+      else if (hasH && hasV) kind = 'bomb';
+      else if (longest.cells.length === 4) kind = 'rocket';
+
+      let spot = longest.cells[Math.floor(longest.cells.length / 2)];
+      for (const [r, c] of swapped) {
+        if (group.keys.has(r * this.cols + c)) spot = [r, c];
+      }
+      if (hasH && hasV && !swapped.some(([r, c]) => group.keys.has(r * this.cols + c))) {
+        // the corner of an L/T is where its runs cross
+        const crossing = [...group.keys].find((k) => group.runs.filter((run) => run.cells.some(([r, c]) => r * this.cols + c === k)).length > 1);
+        if (crossing !== undefined) spot = [Math.floor(crossing / this.cols), crossing % this.cols];
+      }
+
+      const boxes = new Map();
+      for (const k of group.keys) {
+        const r = Math.floor(k / this.cols);
+        const c = k % this.cols;
+        if (!this.grid[r][c]) continue;
+        this.remove(r, c, res, 0);
+        for (const [dy, dx] of DIRS) {
+          const n = this.get(r + dy, c + dx);
+          if (n && n.kind === 'box') boxes.set((r + dy) * this.cols + c + dx, [r + dy, c + dx]);
+        }
+      }
+      // Each neighbouring box takes one hit per match, however many cubes touch it.
+      for (const [y, x] of boxes.values()) {
+        if (this.grid[y][x]) this.damageBox(y, x, res, 0);
+      }
+      res.groupSize = Math.max(res.groupSize, group.keys.size);
+      if (kind) made.push({ kind, color, dir: longest.dir, spot });
+    }
+    for (const { kind, color, dir, spot: [r, c] } of made) {
+      if (this.grid[r][c]) continue;
+      const cell = kind === 'disco' ? disco(color) : kind === 'bomb' ? bomb() : rocket(dir);
+      this.grid[r][c] = cell;
+      res.created = { cell, r, c };
+    }
+    return res;
+  }
+
+  // Resolves a swap the player already made with swapCells. (r1, c1) is where
+  // the dragged cell started; (r2, c2) is where it went.
+  resolveSwap(r1, c1, r2, c2) {
+    const a = this.grid[r1][c1];
+    const b = this.grid[r2][c2];
+    if (isBooster(a) && isBooster(b)) {
+      return this.combo(r2, c2, [a, b], [[r1, c1], [r2, c2]]);
+    }
+    if (isBooster(a) || isBooster(b)) {
+      const [br, bc, other] = isBooster(b) ? [r2, c2, a] : [r1, c1, b];
+      const cell = this.grid[br][bc];
+      // A disco ball clears the colour it was swapped with.
+      if (cell.kind === 'disco' && isCube(other)) cell.color = other.color;
+      const res = this.newResult();
+      this.hit(br, bc, res, 0);
+      this.runQueue(res);
+      return res;
+    }
+    return this.clearMatches([[r1, c1], [r2, c2]]);
+  }
+
+  // Tapping a booster fires it on its own.
   tap(r, c) {
     const cell = this.get(r, c);
-    if (!cell) return null;
-    if (cell.kind === 'cube') return this.blastGroup(r, c);
-    if (isBooster(cell)) return this.fireBooster(r, c);
-    return null;
+    if (!isBooster(cell)) return null;
+    const res = this.newResult();
+    this.hit(r, c, res, 0);
+    this.runQueue(res);
+    return res;
   }
 
   // Hammer power-up: destroys (or damages) exactly one cell.
@@ -179,6 +364,8 @@ export class Board {
     this.runQueue(res);
     return res;
   }
+
+  // ---------- boosters ----------
 
   newResult() {
     return {
@@ -233,49 +420,11 @@ export class Board {
     }
   }
 
-  blastGroup(r, c) {
-    const group = this.findGroup(r, c);
-    if (group.length < 2) return null;
+  // Two boosters swapped into each other fire a combo centred on (r, c).
+  combo(r, c, cells, positions) {
     const res = this.newResult();
-    const color = this.grid[r][c].color;
-    const boxes = new Map();
-    for (const [y, x] of group) {
-      this.remove(y, x, res, 0);
-      for (const [dy, dx] of DIRS) {
-        const n = this.get(y + dy, x + dx);
-        if (n && n.kind === 'box') boxes.set((y + dy) * this.cols + x + dx, [y + dy, x + dx]);
-      }
-    }
-    // Each neighbouring box takes one hit per blast, however many cubes touch it.
-    for (const [y, x] of boxes.values()) {
-      if (this.grid[y][x]) this.damageBox(y, x, res, 0);
-    }
-    const size = group.length;
-    let made = null;
-    if (size >= DISCO_MIN) made = disco(color);
-    else if (size >= BOMB_MIN) made = bomb();
-    else if (size >= ROCKET_MIN) made = rocket(this.rng() < 0.5 ? 'h' : 'v');
-    if (made) {
-      this.grid[r][c] = made;
-      res.created = { cell: made, r, c };
-    }
-    res.groupSize = size;
-    return res;
-  }
-
-  fireBooster(r, c) {
-    const res = this.newResult();
-    const group = this.boosterGroup(r, c);
-    if (group.length === 1) {
-      this.hit(r, c, res, 0);
-      this.runQueue(res);
-      return res;
-    }
-
-    // Touching boosters merge into a combo centred on the tapped cell.
     res.combo = true;
-    const cells = group.map(([y, x]) => this.grid[y][x]);
-    for (const [y, x] of group) {
+    for (const [y, x] of positions) {
       res.removed.push({ cell: this.grid[y][x], r: y, c: x, wave: 0 });
       this.grid[y][x] = null;
     }
@@ -288,10 +437,10 @@ export class Board {
       this.forEach((_, y, x) => all.push([y, x]));
       this.hitMany(all, res, 1);
     } else if (discos.length === 1) {
-      const color = discos[0].color;
+      const color = this.mostCommonColor();
       const targets = [];
       this.forEach((cell, y, x) => {
-        if (cell && cell.kind === 'cube' && cell.color === color) targets.push([y, x]);
+        if (isCube(cell) && cell.color === color) targets.push([y, x]);
       });
       res.effects.push({ type: 'disco', r, c, color, targets, wave: 0 });
       // The cubes turn into boosters, but they still count toward color goals.
@@ -344,7 +493,7 @@ export class Board {
 
   mostCommonColor() {
     const counts = Array(MAX_COLORS).fill(0);
-    this.forEach((cell) => { if (cell && cell.kind === 'cube') counts[cell.color]++; });
+    this.forEach((cell) => { if (isCube(cell)) counts[cell.color]++; });
     return counts.indexOf(Math.max(...counts));
   }
 
@@ -359,7 +508,7 @@ export class Board {
       const color = cell.color ?? this.mostCommonColor();
       const targets = [];
       this.forEach((n, y, x) => {
-        if (n && n.kind === 'cube' && n.color === color) targets.push([y, x]);
+        if (isCube(n) && n.color === color) targets.push([y, x]);
       });
       res.effects.push({ type: 'disco', r, c, color, targets, wave });
       this.hitMany(targets, res, wave);

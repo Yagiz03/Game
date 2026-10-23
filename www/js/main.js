@@ -152,9 +152,9 @@ class App {
 
   tutorialTip(n) {
     return [
-      'Yan yana aynı renkte en az 2 küpe dokunarak patlat.',
-      '5 küplük grup roket, 7 küplük bomba, 9 küplük grup disko topu yapar!',
-      'Kutuları kırmak için yanlarındaki küpleri patlat.',
+      'İki komşu küpü kaydırarak yer değiştir. Aynı renkten 3 tane yan yana gelince patlarlar.',
+      '4\'lü sıra roket, L veya T şekli bomba, 5\'li sıra disko topu yapar! Booster\'ları kaydır ya da dokun.',
+      'Kutuları kırmak için yanlarında eşleşme yap.',
     ][n - 1];
   }
 

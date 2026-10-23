@@ -319,8 +319,14 @@ export class Renderer {
     this.shakeAmt = 0;
     this.flash = 0;
     this.onTap = null;
+    this.onSwipe = null;
+    this.selected = null;
+    this.drag = null;
     this.frame = this.frame.bind(this);
-    canvas.addEventListener('pointerdown', (e) => this.handlePointer(e));
+    canvas.addEventListener('pointerdown', (e) => this.pointerDown(e));
+    canvas.addEventListener('pointermove', (e) => this.pointerMove(e));
+    canvas.addEventListener('pointerup', () => this.pointerUp());
+    canvas.addEventListener('pointercancel', () => { this.drag = null; });
     new ResizeObserver(() => this.resize()).observe(canvas.parentElement);
     this.resize();
     this.last = performance.now();
@@ -335,6 +341,8 @@ export class Renderer {
     this.ghosts = [];
     this.timers = [];
     this.hint = null;
+    this.selected = null;
+    this.drag = null;
     // Intro: every column drops in from above, left to right.
     board.forEach((cell, r, c) => {
       if (!cell) return;
@@ -379,12 +387,47 @@ export class Renderer {
     return { x: this.ox + (c + 0.5) * this.size, y: this.oy + (r + 0.5) * this.size };
   }
 
-  handlePointer(e) {
-    if (!this.board || !this.onTap) return;
+  // Pointer input: a drag of a third of a cell is a swipe toward that
+  // neighbour; a press released without dragging is a tap.
+  pointerDown(e) {
+    if (!this.board) return;
     const rect = this.canvas.getBoundingClientRect();
-    const c = Math.floor((e.clientX - rect.left - this.ox) / this.size);
-    const r = Math.floor((e.clientY - rect.top - this.oy) / this.size);
-    if (this.board.inBounds(r, c)) this.onTap(r, c);
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    const c = Math.floor((x - this.ox) / this.size);
+    const r = Math.floor((y - this.oy) / this.size);
+    if (!this.board.inBounds(r, c)) return;
+    this.drag = { r, c, x, y, moved: false };
+    try { this.canvas.setPointerCapture(e.pointerId); } catch { /* not supported */ }
+  }
+
+  pointerMove(e) {
+    const d = this.drag;
+    if (!d || d.moved) return;
+    const rect = this.canvas.getBoundingClientRect();
+    const dx = e.clientX - rect.left - d.x;
+    const dy = e.clientY - rect.top - d.y;
+    if (Math.max(Math.abs(dx), Math.abs(dy)) < this.size * 0.3) return;
+    d.moved = true;
+    const [dr, dc] = Math.abs(dx) > Math.abs(dy) ? [0, Math.sign(dx)] : [Math.sign(dy), 0];
+    this.onSwipe?.(d.r, d.c, dr, dc);
+  }
+
+  pointerUp() {
+    const d = this.drag;
+    this.drag = null;
+    if (d && !d.moved) this.onTap?.(d.r, d.c);
+  }
+
+  // Swap animation: the cell glides from its old spot to where it now is.
+  slide(cell, fromR, fromC, dur = 0.16) {
+    cell.tw = { fromR, fromC, t: 0, dur, back: false };
+    cell.vr = undefined;
+  }
+
+  // Rejected swap: the cell nudges toward (toR, toC) and comes back.
+  bounce(cell, toR, toC, dur = 0.3) {
+    cell.tw = { toR, toC, t: 0, dur, back: true };
   }
 
   after(seconds, fn) {
@@ -395,7 +438,7 @@ export class Renderer {
     if (this.effects.length || this.ghosts.length || this.timers.length) return false;
     let settled = true;
     this.board.forEach((cell, r) => {
-      if (cell && (cell.delay > 0 || cell.vr < r)) settled = false;
+      if (cell && (cell.delay > 0 || cell.vr < r || cell.tw)) settled = false;
     });
     return settled;
   }
@@ -495,6 +538,10 @@ export class Renderer {
     if (this.board) {
       this.board.forEach((cell, r) => {
         if (!cell) return;
+        if (cell.tw) {
+          cell.tw.t += dt;
+          if (cell.tw.t >= cell.tw.dur) cell.tw = null;
+        }
         if (cell.vr === undefined) cell.vr = r;
         if (cell.delay > 0) { cell.delay -= dt; return; }
         if (cell.vr < r) {
@@ -540,10 +587,25 @@ export class Renderer {
 
   drawBoardCell(ctx, cell, r, c) {
     const s = this.size;
-    const x = this.ox + (c + 0.5) * s;
-    const y = this.oy + ((cell.vr ?? r) + 0.5) * s;
+    let row = cell.vr ?? r;
+    let col = c;
+    if (cell.tw) {
+      const p = Math.min(1, cell.tw.t / cell.tw.dur);
+      const e = p < 0.5 ? 2 * p * p : 1 - (-2 * p + 2) ** 2 / 2; // ease in-out
+      if (cell.tw.back) {
+        const k = (p < 0.5 ? p * 2 : (1 - p) * 2) * 0.45;
+        row = r + (cell.tw.toR - r) * k;
+        col = c + (cell.tw.toC - c) * k;
+      } else {
+        row = cell.tw.fromR + (r - cell.tw.fromR) * e;
+        col = cell.tw.fromC + (c - cell.tw.fromC) * e;
+      }
+    }
+    const x = this.ox + (col + 0.5) * s;
+    const y = this.oy + (row + 0.5) * s;
     let sx = 1;
     let sy = 1;
+    if (this.selected === cell) { sx = sy = 1.1 + Math.sin(this.time * 8) * 0.04; }
     if (cell.pop > 0) { const k = 1 + Math.sin(cell.pop * Math.PI) * 0.22; sx *= k; sy *= k; }
     if (cell.popIn > 0) { const k = 1 - cell.popIn; sx *= k; sy *= k; }
     if (cell.squash > 0) { sx *= 1 + cell.squash * 0.08; sy *= 1 - cell.squash * 0.1; }
@@ -554,6 +616,11 @@ export class Renderer {
     ctx.save();
     ctx.translate(x + dx, y + dy + (cell.squash > 0 ? cell.squash * s * 0.05 : 0));
     ctx.scale(sx, sy);
+    if (this.selected === cell) {
+      roundRect(ctx, -s * 0.5, -s * 0.5, s, s, s * 0.22);
+      ctx.fillStyle = 'rgba(255,255,255,0.35)';
+      ctx.fill();
+    }
     drawCell(ctx, cell, s, this.time);
     ctx.restore();
   }
@@ -594,7 +661,8 @@ export class Renderer {
     ctx.rect(this.ox - 4, this.oy - 4, bw + 8, bh + 8);
     ctx.clip();
     // Moving cells first, then the static boxes on top so cubes pass behind them.
-    this.board.forEach((cell, r, c) => { if (cell && cell.kind !== 'box') this.drawBoardCell(ctx, cell, r, c); });
+    this.board.forEach((cell, r, c) => { if (cell && cell.kind !== 'box' && !cell.tw) this.drawBoardCell(ctx, cell, r, c); });
+    this.board.forEach((cell, r, c) => { if (cell?.tw) this.drawBoardCell(ctx, cell, r, c); });
     for (const g of this.ghosts) this.drawBoardCell(ctx, g.cell, g.r, g.c);
     this.board.forEach((cell, r, c) => { if (cell && cell.kind === 'box') this.drawBoardCell(ctx, cell, r, c); });
     for (const e of this.effects) this.drawEffect(ctx, e);

@@ -1,16 +1,18 @@
 # Küp Patlat
 
-Toon Blast / Royal Match tarzı, mobil için yapılmış bir küp patlatma bulmaca oyunu.
+Royal Match / Candy Crush tarzı, mobil için yapılmış kaydırmalı eşleştirme (match-3) bulmaca oyunu.
 HTML5 + JavaScript ile yazıldı, [Capacitor](https://capacitorjs.com) ile Android ve iOS
 uygulamasına paketlenir. Grafikler yapay zekâ ile üretilmiş sprite'lar; sesler Kenney'nin CC0 paketlerinden.
 Tüm kaynaklar ve lisansları `CREDITS.md` dosyasında.
 
 ## Oyunda neler var
 
-- **Oynanış:** aynı renkteki en az 2 bitişik küpe dokun, patlat. Hamle sayısı sınırlı.
-- **Güçlendiriciler:** 5'li grup → roket, 7'li → bomba, 9'lu → disko topu.
-  Yan yana duran güçlendiriciler birleşip kombo yapar (roket+roket, bomba+roket,
-  bomba+bomba, disko+herhangi biri, disko+disko).
+- **Oynanış:** iki komşu küpü kaydırarak yer değiştir; aynı renkten 3+ küp yan yana ya da
+  alt alta gelince patlar. Düşen küpler yeni eşleşme yaparsa zincirleme patlar. İstersen
+  önce bir küpe, sonra komşusuna dokunarak da değiştirebilirsin.
+- **Güçlendiriciler:** 4'lü sıra → roket, L/T şekli → bomba, 5'li sıra → disko topu.
+  Güçlendiriciyi kaydırınca ya da ona dokununca patlar; iki güçlendiriciyi birbirine
+  kaydırmak kombo yapar (roket+roket, bomba+roket, bomba+bomba, disko+herhangi biri, disko+disko).
 - **Engeller:** tek ve çift canlı tahta kutular. Kutular sabit durur, küpler arkalarından akar.
 - **60 seviye:** ilk 5 seviye öğretici. Hamle sayıları bir botun binlerce kez oynamasıyla
   kalibre edildi (aşağıya bakın). Her 10. seviye "zor", ardından gelen seviye nefes aldırıyor.
