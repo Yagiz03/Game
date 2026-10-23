@@ -2,8 +2,8 @@
 
 Toon Blast / Royal Match tarzı, mobil için yapılmış bir küp patlatma bulmaca oyunu.
 HTML5 + JavaScript ile yazıldı, [Capacitor](https://capacitorjs.com) ile Android ve iOS
-uygulamasına paketlenir. Grafikler yapay zekâ ile üretilmiş sprite'lar, sesler ise kodla
-sentezleniyor (ses dosyası yok).
+uygulamasına paketlenir. Grafikler yapay zekâ ile üretilmiş sprite'lar; sesler Kenney'nin CC0 paketlerinden.
+Tüm kaynaklar ve lisansları `CREDITS.md` dosyasında.
 
 ## Oyunda neler var
 
@@ -18,6 +18,8 @@ sentezleniyor (ses dosyası yok).
   günlük ödül, mağaza, çekiç ve karıştır güçlendiricileri, hamle bitince +5 hamle satın alma.
 - **Para kazanma altyapısı:** ödüllü reklam akışı hazır (şimdilik örnek reklam gösteriyor,
   `www/js/ads.js`).
+- **Bonus turu:** seviye bitince kalan hamleler rokete dönüşüp patlıyor, her biri coin veriyor.
+- **Galibiyet serisi:** üst üste 2/4/6 galibiyette seviyeye roket/bomba/disko topuyla başlanıyor.
 - **Diğer:** ses efektleri, titreşim, ipucu (6 saniye boşta kalınca), kayıt (localStorage),
   telefon çentiği (safe area) desteği.
 

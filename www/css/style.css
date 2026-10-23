@@ -15,7 +15,20 @@
   --safe-bottom: env(safe-area-inset-bottom, 0px);
 }
 
+/* Lilita One by Juan Montoreano, SIL Open Font License (free for commercial use). */
+@font-face {
+  font-family: "Lilita One";
+  src: url("lilita-one.woff2") format("woff2");
+  font-display: swap;
+}
+
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+.logo, .btn, .node, .pill b, .hud-moves b, .hud-level, .goal, .modal-card h2, .reward, .booster .count, .toast {
+  font-family: "Lilita One", system-ui, sans-serif;
+  font-weight: 400;
+  letter-spacing: 0.5px;
+}
 
 html, body {
   margin: 0;
@@ -126,6 +139,21 @@ button:disabled { cursor: default; opacity: 0.45; }
 .node.hard:not(.locked) { outline: 3px solid var(--danger); outline-offset: 3px; }
 .node .stars { position: absolute; bottom: -14px; font-size: 13px; color: var(--gold); text-shadow: 0 1px 2px #000; letter-spacing: -1px; }
 @keyframes breathe { 50% { scale: 1.08; } }
+
+/* Map nodes reuse the cube sprites: yellow = done, green = current, red = hard, grey = locked. */
+.node, .node.done, .node.current, .node.locked {
+  background: url("../img/cube1.png") center / contain no-repeat;
+  border-radius: 0;
+  box-shadow: none;
+  font-size: 26px;
+  text-shadow: 0 2px 0 rgba(0, 0, 0, 0.55), 0 0 6px rgba(0, 0, 0, 0.4);
+  filter: drop-shadow(0 6px 6px rgba(0, 0, 0, 0.35));
+}
+.node.done { background-image: url("../img/cube3.png"); }
+.node.current { background-image: url("../img/cube2.png"); font-size: 30px; }
+.node.hard:not(.locked) { background-image: url("../img/cube0.png"); outline: none; }
+.node.locked { filter: grayscale(1) brightness(0.8) drop-shadow(0 6px 6px rgba(0, 0, 0, 0.35)); }
+.node.locked .num { filter: grayscale(0); }
 
 .home-footer { display: flex; gap: 10px; align-items: center; }
 

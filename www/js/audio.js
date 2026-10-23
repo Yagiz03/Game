@@ -1,11 +1,39 @@
-// Sound effects synthesised with WebAudio, so the game ships with no audio files.
+// Sound effects: CC0 samples from Kenney (www.kenney.nl) in www/sfx, with a
+// WebAudio synth fallback for any sample that is missing or fails to decode.
 // The context is created on the first user gesture (browsers require it).
+
+const SAMPLES = ['pop', 'click', 'nope', 'box0', 'box1', 'box2', 'rocket', 'bomb', 'create', 'disco', 'coin', 'win', 'lose', 'shuffle'];
 
 export class Sfx {
   constructor() {
     this.ctx = null;
     this.enabled = true;
     this.noise = null;
+    this.buffers = {};
+  }
+
+  loadSamples() {
+    for (const name of SAMPLES) {
+      fetch(`sfx/${name}.mp3`)
+        .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(r.status))))
+        .then((data) => this.ctx.decodeAudioData(data))
+        .then((buffer) => { this.buffers[name] = buffer; })
+        .catch(() => {}); // keep the synth fallback for this sound
+    }
+  }
+
+  // Plays a sample if it is loaded; returns false so callers can fall back.
+  sample(name, { rate = 1, vol = 1 } = {}) {
+    const buffer = this.buffers[name];
+    if (!buffer) return false;
+    const src = this.ctx.createBufferSource();
+    src.buffer = buffer;
+    src.playbackRate.value = rate;
+    const gain = this.ctx.createGain();
+    gain.gain.value = vol;
+    src.connect(gain).connect(this.ctx.destination);
+    src.start();
+    return true;
   }
 
   unlock() {
@@ -20,6 +48,7 @@ export class Sfx {
     this.noise = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
     const data = this.noise.getChannelData(0);
     for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+    this.loadSamples();
   }
 
   tone(freq, dur, { type = 'sine', vol = 0.2, to = null, delay = 0 } = {}) {
@@ -57,6 +86,14 @@ export class Sfx {
 
   play(name, arg = 0) {
     if (!this.enabled || !this.ctx) return;
+    // Bigger groups pop at a higher pitch, a small reward for planning.
+    if (name === 'pop' && this.sample('pop', { rate: 0.9 + Math.min(arg, 12) * 0.05 })) return;
+    if (name === 'box' && this.sample(`box${Math.floor(Math.random() * 3)}`, { rate: 0.9 + Math.random() * 0.2, vol: 0.8 })) return;
+    if (name === 'bomb' && this.sample('bomb')) {
+      this.tone(90, 0.4, { type: 'sine', vol: 0.35, to: 40 }); // extra low thump
+      return;
+    }
+    if (name !== 'pop' && name !== 'box' && this.sample(name, { vol: name === 'click' ? 0.6 : 1 })) return;
     switch (name) {
       case 'pop': {
         const base = 420 + Math.min(arg, 12) * 45;

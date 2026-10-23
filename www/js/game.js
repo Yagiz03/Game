@@ -1,7 +1,7 @@
 // One level being played: owns the Board, the move counter and goals, and
 // drives the renderer and HUD. The App (main.js) owns screens and progress.
 
-import { Board } from './board.js';
+import { Board, rocket, bomb, disco, isBooster } from './board.js';
 import { getLevel, starsFor } from './levels.js';
 import { iconCanvas } from './render.js';
 import { vibrate } from './audio.js';
@@ -28,11 +28,29 @@ export class GameSession {
     this.idle = 0;
     this.destroyed = false;
 
+    this.streakBonus = this.placeStreakBoosters(app.state.streak || 0);
     this.renderer.setBoard(this.board);
     this.renderer.onTap = (r, c) => this.tap(r, c);
     this.renderer.armed = false;
     this.buildHud();
     this.hintTimer = setInterval(() => this.checkHint(), 1000);
+    if (this.streakBonus) setTimeout(() => app.toast(`🔥 ${app.state.streak} galibiyet serisi: başlangıç bonusu!`), 900);
+  }
+
+  // Win streak rewards: 2 wins in a row start the level with a rocket,
+  // 4 with a bomb too, 6 with a disco ball too.
+  placeStreakBoosters(streak) {
+    const gifts = [];
+    if (streak >= 2) gifts.push(rocket(Math.random() < 0.5 ? 'h' : 'v'));
+    if (streak >= 4) gifts.push(bomb());
+    if (streak >= 6) gifts.push(disco(this.board.randomColor()));
+    const spots = [];
+    this.board.forEach((cell, r, c) => { if (cell?.kind === 'cube' && r < this.board.rows - 1) spots.push([r, c]); });
+    for (const gift of gifts) {
+      const [r, c] = spots.splice(Math.floor(Math.random() * spots.length), 1)[0];
+      this.board.grid[r][c] = gift;
+    }
+    return gifts.length;
   }
 
   destroy() {
@@ -134,10 +152,10 @@ export class GameSession {
     });
   }
 
-  waitSettle() {
+  waitSettle(done = () => this.afterSettle()) {
     const check = () => {
       if (this.destroyed) return;
-      if (this.renderer.isSettled()) this.afterSettle();
+      if (this.renderer.isSettled()) done();
       else requestAnimationFrame(check);
     };
     requestAnimationFrame(check);
@@ -169,9 +187,65 @@ export class GameSession {
     const { w, h } = this.renderer;
     this.renderer.floatText('TEBRİKLER!', w / 2, h / 2, '#ffd166');
     this.board.forEach((cell, r, c) => { if (cell && Math.random() < 0.35) this.renderer.burst(r, c, cell); });
+    const movesLeft = this.moves;
     setTimeout(() => {
-      if (!this.destroyed) this.app.levelWon(this.level.number, stars, this.moves);
-    }, 1100);
+      if (this.destroyed) return;
+      if (movesLeft > 0) this.bonusRound(stars, movesLeft);
+      else this.app.levelWon(this.level.number, stars, movesLeft);
+    }, 1000);
+  }
+
+  // Leftover moves turn into rockets that fire one after another, along with
+  // any boosters still on the board. Each leftover move pays bonus coins.
+  bonusRound(stars, movesLeft) {
+    const { w, h } = this.renderer;
+    this.renderer.floatText('BONUS!', w / 2, h / 3, '#ffd166');
+    const cubes = [];
+    this.board.forEach((cell, r, c) => { if (cell?.kind === 'cube') cubes.push([r, c]); });
+    for (let i = cubes.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [cubes[i], cubes[j]] = [cubes[j], cubes[i]];
+    }
+    const picks = cubes.slice(0, Math.min(movesLeft, 10));
+    let placed = 0;
+    let fired = 0;
+
+    const fireNext = () => {
+      if (this.destroyed) return;
+      let target = null;
+      this.board.forEach((cell, r, c) => { if (!target && isBooster(cell)) target = [r, c]; });
+      if (!target || fired++ > 40) {
+        this.app.levelWon(this.level.number, stars, movesLeft);
+        return;
+      }
+      const res = this.board.tap(...target);
+      this.playSounds(res);
+      this.renderer.after(this.renderer.playResult(res), () => {
+        if (this.destroyed) return;
+        this.renderer.spawn(this.board.applyGravity());
+        this.waitSettle(fireNext);
+      });
+    };
+
+    const placeNext = () => {
+      if (this.destroyed) return;
+      if (placed >= picks.length) {
+        this.moves = 0;
+        this.updateHud();
+        fireNext();
+        return;
+      }
+      const [r, c] = picks[placed++];
+      const cell = rocket(Math.random() < 0.5 ? 'h' : 'v');
+      cell.vr = r;
+      cell.pop = 1;
+      this.board.grid[r][c] = cell;
+      this.moves = Math.max(0, this.moves - 1);
+      this.updateHud();
+      this.app.sfx.play('create');
+      setTimeout(placeNext, 120);
+    };
+    placeNext();
   }
 
   addMoves(n) {

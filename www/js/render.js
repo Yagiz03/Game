@@ -617,7 +617,7 @@ export class Renderer {
       const scale = Math.min(1, tx.t * 6) * (1 + 0.1 * Math.sin(tx.t * 10));
       ctx.save();
       ctx.globalAlpha = 1 - Math.max(0, k - 0.6) / 0.4;
-      ctx.font = `900 ${Math.round(s * 0.6)}px system-ui, sans-serif`;
+      ctx.font = `${Math.round(s * 0.62)}px "Lilita One", system-ui, sans-serif`;
       const half = ctx.measureText(tx.text).width / 2 + 12;
       ctx.translate(Math.min(Math.max(tx.x, half), this.w - half), tx.y - k * s * 1.5);
       ctx.scale(scale, scale);

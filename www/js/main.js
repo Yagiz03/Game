@@ -142,6 +142,7 @@ class App {
           el('span', {}, String(g.count)),
           el('small', {}, g.type === 'box' ? 'Kutu' : COLOR_NAMES[g.color])))),
         el('p', { class: 'moves-info' }, `${level.moves} hamle`),
+        (this.state.streak || 0) >= 2 ? el('p', { class: 'tip' }, `🔥 Seri: ${this.state.streak} galibiyet. Bonus güçlendiricilerle başlıyorsun!`) : null,
         n <= 3 ? el('p', { class: 'tip' }, this.tutorialTip(n)) : null,
       ],
       buttons: [{ label: 'Başla', cls: 'primary', onClick: () => this.beginLevel(n) }],
@@ -167,10 +168,11 @@ class App {
 
   levelWon(n, stars, movesLeft) {
     const s = this.state;
-    const reward = 20 + stars * 10 + movesLeft * 2;
+    const reward = 20 + stars * 10 + movesLeft * 5;
     s.stars[n] = Math.max(s.stars[n] || 0, stars);
     if (n >= s.level) s.level = Math.min(TOTAL_LEVELS, n + 1);
     s.coins += reward;
+    s.streak = (s.streak || 0) + 1;
     this.persist();
     this.sfx.play('coin');
     const isLast = n >= TOTAL_LEVELS;
@@ -179,6 +181,7 @@ class App {
       body: [
         el('div', { class: 'star-row' }, [1, 2, 3].map((i) => el('span', { class: `star${i <= stars ? ' on' : ''}`, style: `animation-delay:${i * 0.2}s` }, '★'))),
         el('p', { class: 'reward' }, `+${reward} 🪙`),
+        s.streak >= 2 ? el('p', { class: 'tip' }, `🔥 ${s.streak} galibiyet serisi! Sonraki seviyeye bonus güçlendiriciyle başlarsın.`) : null,
         isLast ? el('p', { class: 'tip' }, 'Tüm seviyeleri bitirdin! Yeni seviyeler yakında.') : null,
       ],
       buttons: [
@@ -218,12 +221,17 @@ class App {
   }
 
   levelLost(n) {
+    const hadStreak = (this.state.streak || 0) >= 2;
+    this.state.streak = 0;
     store.loseLife(this.state);
     this.persist();
     vibrate(80);
     this.modal({
       title: 'Seviye Başarısız',
-      body: [el('p', { class: 'big-emoji' }, '💔'), el('p', { class: 'muted' }, '1 can kaybettin.')],
+      body: [
+        el('p', { class: 'big-emoji' }, '💔'),
+        el('p', { class: 'muted' }, hadStreak ? '1 can kaybettin ve galibiyet serin bitti.' : '1 can kaybettin.'),
+      ],
       buttons: [
         { label: 'Harita', onClick: () => { this.closeModal(); this.showHome(); } },
         { label: 'Tekrar Dene', cls: 'primary', onClick: () => { this.closeModal(); this.startLevel(n); } },
@@ -242,6 +250,7 @@ class App {
         { label: this.state.sound ? '🔊 Ses: Açık' : '🔇 Ses: Kapalı', onClick: () => { this.toggleSound(); this.showPause(); } },
         { label: 'Seviyeden Çık', cls: 'danger', onClick: () => {
           if (session.movesUsed > 0 && session.state !== 'won') {
+            this.state.streak = 0;
             store.loseLife(this.state);
             this.persist();
           }

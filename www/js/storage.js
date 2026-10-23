@@ -16,6 +16,7 @@ const DEFAULTS = {
   hammer: 3,
   shuffle: 2,
   lastDaily: '',
+  streak: 0, // consecutive wins; unlocks starting boosters
 };
 
 export function fresh() {
