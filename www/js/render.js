@@ -11,6 +11,27 @@ export const PALETTE = [
 ];
 
 const GRAVITY = 95; // rows per second squared
+
+// Rendered sprites in www/img (see tools/cut_sprites.py). Any sprite that
+// fails to load falls back to the procedural drawing below.
+const SPRITE_NAMES = ['cube0', 'cube1', 'cube2', 'cube3', 'cube4', 'box', 'box2', 'rocket', 'bomb', 'disco'];
+const sprites = {};
+
+export function loadSprites(base = 'img/') {
+  return Promise.all(SPRITE_NAMES.map((name) => new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => { sprites[name] = img; resolve(); };
+    img.onerror = () => resolve();
+    img.src = `${base}${name}.png`;
+  })));
+}
+
+function drawSprite(ctx, name, size) {
+  const img = sprites[name];
+  if (!img) return false;
+  ctx.drawImage(img, -size / 2, -size / 2, size, size);
+  return true;
+}
 const WAVE_GAP = 0.13; // seconds between chained booster waves
 
 function roundRect(ctx, x, y, w, h, r) {
@@ -101,14 +122,18 @@ function drawBox(ctx, cell, s) {
     for (const [x, y] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
       ctx.beginPath(); ctx.arc(x * w * 0.37, y * w * 0.37, s * 0.035, 0, Math.PI * 2); ctx.fill();
     }
-    if (cell.hp < cell.maxHp) {
-      ctx.strokeStyle = 'rgba(40,20,5,0.85)';
-      ctx.lineWidth = s * 0.04;
-      ctx.beginPath();
-      ctx.moveTo(-w * 0.1, -w * 0.45); ctx.lineTo(w * 0.05, -w * 0.1); ctx.lineTo(-w * 0.12, w * 0.12); ctx.lineTo(w * 0.08, w * 0.45);
-      ctx.stroke();
-    }
+    if (cell.hp < cell.maxHp) drawCrack(ctx, s);
   }
+}
+
+function drawCrack(ctx, s) {
+  const w = s * 0.94;
+  ctx.strokeStyle = 'rgba(40,20,5,0.9)';
+  ctx.lineWidth = s * 0.045;
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.moveTo(-w * 0.1, -w * 0.45); ctx.lineTo(w * 0.05, -w * 0.1); ctx.lineTo(-w * 0.12, w * 0.12); ctx.lineTo(w * 0.08, w * 0.45);
+  ctx.stroke();
 }
 
 function drawRocket(ctx, cell, s, t) {
@@ -209,12 +234,54 @@ function drawDisco(ctx, cell, s, t) {
 // Draws one cell centred on the current origin.
 export function drawCell(ctx, cell, s, t = 0) {
   switch (cell.kind) {
-    case 'cube': drawCube(ctx, cell.color, s); break;
-    case 'box': drawBox(ctx, cell, s); break;
-    case 'rocket': drawRocket(ctx, cell, s, t); break;
-    case 'bomb': drawBomb(ctx, s, t); break;
-    case 'disco': drawDisco(ctx, cell, s, t); break;
+    case 'cube':
+      if (!drawSprite(ctx, `cube${cell.color}`, s * 0.98)) drawCube(ctx, cell.color, s);
+      break;
+    case 'box':
+      if (drawSprite(ctx, cell.maxHp > 1 ? 'box2' : 'box', s * 0.98)) {
+        if (cell.hp < cell.maxHp) drawCrack(ctx, s);
+      } else {
+        drawBox(ctx, cell, s);
+      }
+      break;
+    case 'rocket':
+      if (sprites.rocket) {
+        if (cell.dir === 'v') ctx.rotate(-Math.PI / 2);
+        drawSprite(ctx, 'rocket', s * 1.05);
+      } else {
+        drawRocket(ctx, cell, s, t);
+      }
+      break;
+    case 'bomb':
+      if (sprites.bomb) {
+        const k = 1 + Math.sin(t * 9) * 0.035;
+        ctx.scale(k, k);
+        drawSprite(ctx, 'bomb', s * 0.9);
+      } else {
+        drawBomb(ctx, s, t);
+      }
+      break;
+    case 'disco':
+      if (sprites.disco) {
+        ctx.rotate(Math.sin(t * 2) * 0.2);
+        drawSprite(ctx, 'disco', s * 0.9);
+        drawColorRing(ctx, cell.color ?? 0, s);
+      } else {
+        drawDisco(ctx, cell, s, t);
+      }
+      break;
   }
+}
+
+// Small badge showing which color a disco ball will clear.
+function drawColorRing(ctx, color, s) {
+  ctx.beginPath();
+  ctx.arc(s * 0.28, s * 0.28, s * 0.12, 0, Math.PI * 2);
+  ctx.fillStyle = PALETTE[color].base;
+  ctx.fill();
+  ctx.lineWidth = s * 0.04;
+  ctx.strokeStyle = '#fff';
+  ctx.stroke();
 }
 
 // Renders a cell into a small standalone canvas (used for HUD goal icons).
@@ -588,7 +655,7 @@ export class Renderer {
       ctx.save();
       ctx.translate(side * len, 0);
       if (side < 0) ctx.rotate(Math.PI);
-      drawRocket(ctx, { dir: 'h' }, s * 0.9, this.time);
+      drawCell(ctx, { kind: 'rocket', dir: 'h' }, s * 0.9, this.time);
       ctx.restore();
     }
     ctx.restore();
@@ -641,7 +708,7 @@ export class Renderer {
         }
         ctx.translate(x, y);
         ctx.scale(1 + p * 0.5, 1 + p * 0.5);
-        drawDisco(ctx, { color: e.color }, s, this.time * 4);
+        drawCell(ctx, { kind: 'disco', color: e.color }, s, this.time * 4);
         ctx.restore();
         break;
       }

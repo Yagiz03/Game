@@ -2,8 +2,8 @@
 
 Toon Blast / Royal Match tarzı, mobil için yapılmış bir küp patlatma bulmaca oyunu.
 HTML5 + JavaScript ile yazıldı, [Capacitor](https://capacitorjs.com) ile Android ve iOS
-uygulamasına paketlenir. Hiçbir görsel ya da ses dosyası yok: hepsi kodla çiziliyor ve
-sentezleniyor.
+uygulamasına paketlenir. Grafikler yapay zekâ ile üretilmiş sprite'lar, sesler ise kodla
+sentezleniyor (ses dosyası yok).
 
 ## Oyunda neler var
 
@@ -44,6 +44,19 @@ npm run calibrate    # hamle sayılarını hedef zorluk eğrisine göre yeniden 
 `www/js/moves.js` dosyasını yeniden üretir. Hedef eğri `tests/simulate.mjs` içindeki
 `targetRate()` fonksiyonunda. Bot gerçek bir oyuncu değil: yayından sonra asıl ayar
 gerçek oyuncu verisiyle (seviye başına kazanma oranı, terk etme) yapılmalı.
+
+## Görseller
+
+`www/img/` altındaki sprite'lar ve arka plan yapay zekâ ile üretildi (Higgsfield, Z Image
+modeli). Ham görsellerin arka planı `tools/cut_sprites.py` ile temizlenip 256×256 şeffaf
+PNG'ye dönüştürüldü:
+
+```bash
+python3 tools/cut_sprites.py HAM_GORSEL_KLASORU   # cube0..4, box, box2, rocket, bomb, disco, bg
+```
+
+Bir sprite yüklenemezse oyun o parçayı kodla çizilmiş eski haliyle gösterir. Yayından önce
+kullandığın görsel üretim servisinin ticari kullanım şartlarını kontrol et.
 
 ## Android'e paketleme
 

@@ -1,7 +1,7 @@
 // App shell: screens, level map, modals, shop and progress. A level in play
 // is handled by GameSession (game.js).
 
-import { Renderer } from './render.js';
+import { Renderer, loadSprites } from './render.js';
 import { Sfx, vibrate } from './audio.js';
 import * as store from './storage.js';
 import { TOTAL_LEVELS, getLevel, COLOR_NAMES } from './levels.js';
@@ -421,4 +421,4 @@ class App {
   }
 }
 
-window.app = new App();
+loadSprites().then(() => { window.app = new App(); });
