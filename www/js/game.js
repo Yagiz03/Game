@@ -5,6 +5,7 @@ import { Board, rocket, bomb, disco, isBooster } from './board.js';
 import { getLevel, starsFor } from './levels.js';
 import { iconCanvas } from './render.js';
 import { vibrate } from './audio.js';
+import { confetti } from './fx.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -35,6 +36,7 @@ export class GameSession {
     this.renderer.armed = false;
     this.selectedPos = null;
     this.cascade = 0;
+    this.flying = new Set();
     this.buildHud();
     this.hintTimer = setInterval(() => this.checkHint(), 1000);
     if (this.streakBonus) setTimeout(() => app.toast(`🔥 ${app.state.streak} galibiyet serisi: başlangıç bonusu!`), 900);
@@ -56,7 +58,50 @@ export class GameSession {
     return gifts.length;
   }
 
+  bump(goal) {
+    goal.el.classList.remove('bump');
+    void goal.el.offsetWidth; // restart the CSS animation
+    goal.el.classList.add('bump');
+  }
+
+  // Collected pieces fly from the board up to their goal counter.
+  flyToGoals(res) {
+    const sent = new Map();
+    for (const { cell, r, c, wave } of res.removed) {
+      const goal = this.goals.find((g) => g.left > 0 && (g.type === 'box' ? cell.kind === 'box' : cell.kind === 'cube' && cell.color === g.color));
+      if (!goal) continue;
+      const n = sent.get(goal) || 0;
+      if (n >= 6) continue;
+      sent.set(goal, n + 1);
+      const size = this.renderer.size;
+      const from = this.renderer.screenPos(r, c);
+      const to = goal.el.getBoundingClientRect();
+      const img = new Image();
+      img.src = goal.type === 'box' ? 'img/box.png' : `img/cube${goal.color}.png`;
+      img.className = 'fly';
+      img.style.width = img.style.height = `${size}px`;
+      img.style.left = `${from.x - size / 2}px`;
+      img.style.top = `${from.y - size / 2}px`;
+      document.body.append(img);
+      this.flying.add(img);
+      const dx = to.left + to.width / 2 - from.x;
+      const dy = to.top + 17 - from.y;
+      const anim = img.animate([
+        { transform: 'translate(0, 0) scale(1)' },
+        { transform: `translate(${dx * 0.25}px, ${dy * 0.25 - 50}px) scale(1.2)`, offset: 0.35 },
+        { transform: `translate(${dx}px, ${dy}px) scale(0.45)` },
+      ], { duration: 620, delay: 120 + wave * 130 + n * 45, easing: 'cubic-bezier(0.45, 0, 0.6, 1)', fill: 'both' });
+      anim.onfinish = () => {
+        img.remove();
+        this.flying.delete(img);
+        if (!this.destroyed) this.bump(goal);
+      };
+    }
+  }
+
   destroy() {
+    for (const img of this.flying) img.remove();
+    this.flying.clear();
     this.destroyed = true;
     clearInterval(this.hintTimer);
     this.renderer.onTap = null;
@@ -185,14 +230,10 @@ export class GameSession {
 
   resolve(res) {
     this.state = 'busy';
+    this.flyToGoals(res);
     for (const goal of this.goals) {
       const got = goal.type === 'box' ? res.collected.boxes : res.collected.colors[goal.color];
-      if (got > 0 && goal.left > 0) {
-        goal.left = Math.max(0, goal.left - got);
-        goal.el.classList.remove('bump');
-        void goal.el.offsetWidth; // restart the CSS animation
-        goal.el.classList.add('bump');
-      }
+      if (got > 0 && goal.left > 0) goal.left = Math.max(0, goal.left - got);
     }
     this.updateHud();
     const wait = this.renderer.playResult(res);
@@ -251,6 +292,7 @@ export class GameSession {
     const stars = starsFor(this.level, this.moves);
     this.app.sfx.play('win');
     vibrate([30, 60, 30]);
+    confetti();
     const { w, h } = this.renderer;
     this.renderer.floatText('TEBRİKLER!', w / 2, h / 2, '#ffd166');
     this.board.forEach((cell, r, c) => { if (cell && Math.random() < 0.35) this.renderer.burst(r, c, cell); });

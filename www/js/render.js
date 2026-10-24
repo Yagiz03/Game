@@ -303,6 +303,12 @@ const particleColor = (cell) => {
   return '#ffd166';
 };
 
+const POP_TIME = 0.2; // a cleared cell swells, flashes white and bursts
+const MERGE_TIME = 0.2; // matched cubes sliding into a new booster
+const SWEEP = 0.035; // seconds per cell for rocket and blast fronts
+
+const easeOutBack = (p) => 1 + 2.7 * (p - 1) ** 3 + 1.7 * (p - 1) ** 2;
+
 export class Renderer {
   constructor(canvas) {
     this.canvas = canvas;
@@ -311,13 +317,14 @@ export class Renderer {
     this.particles = [];
     this.effects = [];
     this.texts = [];
-    this.ghosts = [];
+    this.dying = [];
     this.timers = [];
     this.hint = null;
     this.armed = false;
     this.time = 0;
     this.shakeAmt = 0;
     this.flash = 0;
+    this.nextShine = 1;
     this.onTap = null;
     this.onSwipe = null;
     this.selected = null;
@@ -338,7 +345,7 @@ export class Renderer {
     this.particles = [];
     this.effects = [];
     this.texts = [];
-    this.ghosts = [];
+    this.dying = [];
     this.timers = [];
     this.hint = null;
     this.selected = null;
@@ -376,7 +383,7 @@ export class Renderer {
     // The game screen is display:none while the map is shown; keep the last
     // good layout instead of computing a negative cell size.
     if (!this.board || this.w <= 0 || this.h <= 0) return;
-    const pad = 12;
+    const pad = 14;
     const { rows, cols } = this.board;
     this.size = Math.floor(Math.min((this.w - pad * 2) / cols, (this.h - pad * 2) / rows));
     this.ox = Math.round((this.w - this.size * cols) / 2);
@@ -385,6 +392,13 @@ export class Renderer {
 
   center(r, c) {
     return { x: this.ox + (c + 0.5) * this.size, y: this.oy + (r + 0.5) * this.size };
+  }
+
+  // Page coordinates of a cell centre (for DOM animations over the canvas).
+  screenPos(r, c) {
+    const rect = this.canvas.getBoundingClientRect();
+    const { x, y } = this.center(r, c);
+    return { x: rect.left + x, y: rect.top + y };
   }
 
   // Pointer input: a drag of a third of a cell is a swipe toward that
@@ -435,73 +449,161 @@ export class Renderer {
   }
 
   isSettled() {
-    if (this.effects.length || this.ghosts.length || this.timers.length) return false;
+    if (this.effects.length || this.dying.length || this.timers.length) return false;
     let settled = true;
     this.board.forEach((cell, r) => {
-      if (cell && (cell.delay > 0 || cell.vr < r || cell.tw)) settled = false;
+      if (cell && (cell.delay > 0 || cell.vr < r || cell.tw || cell.popDelay > 0)) settled = false;
     });
     return settled;
   }
 
+  // How long after its wave a cell at (r, c) is reached by the blast fronts
+  // of this wave's effects: rockets sweep outward, bombs ripple, disco
+  // lightning strikes its targets one by one.
+  sweepDelay(effects, r, c) {
+    let best = Infinity;
+    for (const e of effects) {
+      let d = Infinity;
+      switch (e.type) {
+        case 'rocket':
+          if (e.dir === 'h' && e.r === r) d = Math.abs(c - e.c) * SWEEP;
+          if (e.dir === 'v' && e.c === c) d = Math.abs(r - e.r) * SWEEP;
+          break;
+        case 'cross':
+          if (e.r === r) d = Math.abs(c - e.c) * SWEEP;
+          else if (e.c === c) d = Math.abs(r - e.r) * SWEEP;
+          break;
+        case 'bigcross':
+          if (Math.abs(e.r - r) <= 1) d = Math.abs(c - e.c) * SWEEP;
+          if (Math.abs(e.c - c) <= 1) d = Math.min(d, Math.abs(r - e.r) * SWEEP);
+          break;
+        case 'bomb':
+        case 'nuke':
+          d = Math.hypot(r - e.r, c - e.c) * SWEEP;
+          break;
+        case 'disco': {
+          const i = e.targets.findIndex(([y, x]) => y === r && x === c);
+          if (i >= 0) d = 0.12 + i * 0.018;
+          break;
+        }
+      }
+      best = Math.min(best, d);
+    }
+    return best === Infinity ? 0 : best;
+  }
+
   // Animates a Board result. Returns the seconds to wait before gravity runs.
   playResult(res) {
-    let maxWave = 0;
-    for (const { cell, r, c, wave } of res.removed) {
-      maxWave = Math.max(maxWave, wave);
-      if (wave === 0) {
-        this.burst(r, c, cell);
-      } else {
-        const ghost = { cell, r, c };
-        this.ghosts.push(ghost);
-        this.after(wave * WAVE_GAP, () => {
-          this.ghosts.splice(this.ghosts.indexOf(ghost), 1);
-          this.burst(r, c, cell);
-        });
+    const waves = new Map();
+    for (const e of res.effects) {
+      if (!waves.has(e.wave)) waves.set(e.wave, []);
+      waves.get(e.wave).push(e);
+    }
+    const mergeTo = new Map();
+    for (const m of res.merges || []) {
+      for (const [r, c] of m.from) {
+        if (r !== m.r || c !== m.c) mergeTo.set(`${r},${c}`, m);
       }
     }
-    for (const { cell, wave } of res.damaged) {
-      this.after(wave * WAVE_GAP, () => { cell.shake = 0.3; });
+    let end = 0.1;
+    for (const { cell, r, c, wave } of res.removed) {
+      const delay = wave * WAVE_GAP + this.sweepDelay(waves.get(wave) || [], r, c);
+      const m = mergeTo.get(`${r},${c}`);
+      this.dying.push({
+        cell, r, c,
+        start: this.time + delay,
+        mode: m ? 'merge' : 'pop',
+        toR: m?.r, toC: m?.c,
+      });
+      end = Math.max(end, delay + (m ? MERGE_TIME : POP_TIME));
+    }
+    for (const { cell, r, c, wave } of res.damaged) {
+      const delay = wave * WAVE_GAP + this.sweepDelay(waves.get(wave) || [], r, c);
+      this.after(delay, () => { cell.shake = 0.3; this.chips(r, c, 5); });
     }
     for (const e of res.effects) {
-      maxWave = Math.max(maxWave, e.wave);
-      const dur = e.type === 'disco' ? 0.5 : e.type === 'nuke' ? 0.7 : 0.38;
-      this.effects.push({ ...e, t: -e.wave * WAVE_GAP, dur });
-      if (e.type === 'bomb' || e.type === 'nuke') {
-        this.after(e.wave * WAVE_GAP, () => {
-          this.shakeAmt = Math.max(this.shakeAmt, e.type === 'nuke' ? 14 : 8);
-          if (e.type === 'nuke') this.flash = 1;
-        });
-      }
+      const dur = { disco: 0.25 + e.targets?.length * 0.018 + 0.2, nuke: 0.8, bomb: 0.55, bigcross: 0.5 }[e.type] ?? 0.45;
+      this.effects.push({ ...e, t: -e.wave * WAVE_GAP, dur, started: false });
     }
-    if (res.created) {
-      const { cell, r } = res.created;
+    for (const { cell, r } of res.createdAll || (res.created ? [res.created] : [])) {
       cell.vr = r;
-      cell.pop = 1;
+      cell.popIn = 1;
+      cell.popDelay = res.merges?.length ? MERGE_TIME : 0;
     }
     if (res.groupSize >= 5 || res.combo) {
-      const { x, y } = this.center(res.created?.r ?? 0, res.created?.c ?? 0);
-      const label = res.combo ? 'KOMBO!' : res.groupSize >= 9 ? 'MUHTEŞEM!' : res.groupSize >= 7 ? 'SÜPER!' : 'HARİKA!';
-      this.floatText(label, res.created ? x : this.w / 2, res.created ? y : this.h / 2);
+      const at = res.created ? this.center(res.created.r, res.created.c) : { x: this.w / 2, y: this.h / 2 };
+      const label = res.combo ? 'KOMBO!' : res.groupSize >= 7 ? 'MUHTEŞEM!' : res.groupSize >= 6 ? 'SÜPER!' : 'HARİKA!';
+      this.floatText(label, at.x, at.y);
     }
-    return 0.12 + maxWave * WAVE_GAP + (res.effects.length ? 0.22 : 0);
+    return end + 0.04;
   }
+
+  // ---------- particles ----------
 
   burst(r, c, cell) {
     const { x, y } = this.center(r, c);
+    const s = this.size;
     const color = particleColor(cell);
-    const n = cell.kind === 'cube' ? 7 : 10;
+    if (cell.kind === 'box') {
+      this.chips(r, c, 12);
+      this.smoke(x, y, 3, 0.5);
+      return;
+    }
+    for (let i = 0; i < 7; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const sp = s * (2.5 + Math.random() * 4);
+      this.particles.push({
+        kind: 'shard', x, y, color,
+        vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - s * 3,
+        life: 0.55 + Math.random() * 0.3, max: 0.85,
+        size: s * (0.09 + Math.random() * 0.09),
+        rot: Math.random() * 6, spin: (Math.random() - 0.5) * 16,
+      });
+    }
+    this.sparks(x, y, 5, color);
+  }
+
+  sparks(x, y, n, color = '#fff6c2', speed = 5) {
+    const s = this.size;
     for (let i = 0; i < n; i++) {
       const a = Math.random() * Math.PI * 2;
-      const sp = this.size * (2 + Math.random() * 4);
+      const sp = s * (1 + Math.random() * speed);
       this.particles.push({
-        x, y,
-        vx: Math.cos(a) * sp,
-        vy: Math.sin(a) * sp - this.size * 3,
-        life: 0.5 + Math.random() * 0.35,
-        size: this.size * (0.08 + Math.random() * 0.1),
-        color,
-        square: cell.kind === 'box',
-        rot: Math.random() * 6,
+        kind: 'spark', x, y, color,
+        vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+        life: 0.3 + Math.random() * 0.35, max: 0.65,
+        size: s * (0.1 + Math.random() * 0.12),
+        rot: Math.random() * 6, spin: 6,
+      });
+    }
+  }
+
+  smoke(x, y, n, spread = 0.3) {
+    const s = this.size;
+    for (let i = 0; i < n; i++) {
+      this.particles.push({
+        kind: 'smoke',
+        x: x + (Math.random() - 0.5) * s * spread,
+        y: y + (Math.random() - 0.5) * s * spread,
+        vx: (Math.random() - 0.5) * s * 0.8, vy: -s * (0.3 + Math.random() * 0.6),
+        life: 0.5 + Math.random() * 0.4, max: 0.9,
+        size: s * (0.18 + Math.random() * 0.15),
+      });
+    }
+  }
+
+  chips(r, c, n) {
+    const { x, y } = this.center(r, c);
+    const s = this.size;
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const sp = s * (2 + Math.random() * 4);
+      this.particles.push({
+        kind: 'chip', x, y, color: Math.random() < 0.5 ? '#c0874a' : '#8a5a2b',
+        vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - s * 3,
+        life: 0.6 + Math.random() * 0.3, max: 0.9,
+        size: s * (0.08 + Math.random() * 0.08),
+        rot: Math.random() * 6, spin: (Math.random() - 0.5) * 20,
       });
     }
   }
@@ -522,19 +624,40 @@ export class Renderer {
     this.board.forEach((cell) => { if (cell) cell.pop = 0.8; });
   }
 
-  floatText(text, x, y, color = '#fff') {
+  floatText(text, x, y, color = null) {
     this.texts.push({ text, x, y, t: 0, color });
   }
+
+  // Positions of the rocket heads an effect is flying at this moment.
+  rocketHeads(e) {
+    const s = this.size;
+    const dist = (e.t / SWEEP) * s;
+    const { x, y } = this.center(e.r, e.c);
+    const heads = [];
+    const add = (cx, cy, dir) => {
+      if (dir === 'h') {
+        heads.push({ x: cx - dist, y: cy, angle: Math.PI }, { x: cx + dist, y: cy, angle: 0 });
+      } else {
+        heads.push({ x: cx, y: cy - dist, angle: -Math.PI / 2 }, { x: cx, y: cy + dist, angle: Math.PI / 2 });
+      }
+    };
+    if (e.type === 'rocket') add(x, y, e.dir);
+    else { add(x, y, 'h'); add(x, y, 'v'); }
+    return heads;
+  }
+
+  // ---------- update ----------
 
   update(dt) {
     this.time += dt;
     for (let i = this.timers.length - 1; i >= 0; i--) {
-      if (this.timers[i].at <= this.time) {
+      if (this.timers[i] && this.timers[i].at <= this.time) {
         const { fn } = this.timers[i];
         this.timers.splice(i, 1);
         fn();
       }
     }
+    const s = this.size;
     if (this.board) {
       this.board.forEach((cell, r) => {
         if (!cell) return;
@@ -552,25 +675,95 @@ export class Renderer {
           cell.vr = r;
         }
         if (cell.pop > 0) cell.pop = Math.max(0, cell.pop - dt * 3.5);
-        if (cell.popIn > 0) cell.popIn = Math.max(0, cell.popIn - dt * 4);
-        if (cell.squash > 0) cell.squash = Math.max(0, cell.squash - dt * 6);
+        if (cell.popDelay > 0) cell.popDelay -= dt;
+        else if (cell.popIn > 0) cell.popIn = Math.max(0, cell.popIn - dt * 4);
+        if (cell.squash > 0) cell.squash = Math.max(0, cell.squash - dt * 5);
         if (cell.shake > 0) cell.shake = Math.max(0, cell.shake - dt);
+        if (cell.shine !== undefined) {
+          cell.shine += dt * 1.8;
+          if (cell.shine >= 1) cell.shine = undefined;
+        }
       });
+      // Every so often a highlight glides across a random cube.
+      if (this.time > this.nextShine) {
+        this.nextShine = this.time + 0.35 + Math.random() * 0.6;
+        const r = Math.floor(Math.random() * this.board.rows);
+        const c = Math.floor(Math.random() * this.board.cols);
+        const cell = this.board.grid[r][c];
+        if (cell?.kind === 'cube' && cell.shine === undefined) cell.shine = 0;
+      }
     }
+
+    for (let i = this.dying.length - 1; i >= 0; i--) {
+      const d = this.dying[i];
+      const dur = d.mode === 'merge' ? MERGE_TIME : POP_TIME;
+      if (this.time >= d.start + dur) {
+        this.dying.splice(i, 1);
+        if (d.mode === 'pop') this.burst(d.r, d.c, d.cell);
+        else {
+          const { x, y } = this.center(d.toR, d.toC);
+          this.sparks(x, y, 2, PALETTE[d.cell.color]?.light);
+        }
+      }
+    }
+
+    for (const e of this.effects) {
+      e.t += dt;
+      if (!e.started && e.t >= 0) {
+        e.started = true;
+        this.startEffect(e);
+      }
+      if (e.t > 0 && (e.type === 'rocket' || e.type === 'cross' || e.type === 'bigcross')) {
+        for (const h of this.rocketHeads(e)) {
+          if (Math.random() < 0.7) this.smoke(h.x - Math.cos(h.angle) * s * 0.4, h.y - Math.sin(h.angle) * s * 0.4, 1, 0.2);
+        }
+      }
+    }
+    this.effects = this.effects.filter((e) => e.t < e.dur);
+
     for (const p of this.particles) {
-      p.vy += this.size * 22 * dt;
+      if (p.kind === 'smoke') {
+        p.vx *= 1 - dt * 2;
+        p.size += s * dt * 0.6;
+      } else if (p.kind === 'spark') {
+        p.vx *= 1 - dt * 4;
+        p.vy *= 1 - dt * 4;
+      } else {
+        p.vy += s * 22 * dt;
+      }
       p.x += p.vx * dt;
       p.y += p.vy * dt;
-      p.rot += dt * 8;
+      if (p.spin) p.rot += p.spin * dt;
       p.life -= dt;
     }
     this.particles = this.particles.filter((p) => p.life > 0);
-    for (const e of this.effects) e.t += dt;
-    this.effects = this.effects.filter((e) => e.t < e.dur);
+    if (this.particles.length > 600) this.particles.splice(0, this.particles.length - 600);
     for (const tx of this.texts) tx.t += dt;
-    this.texts = this.texts.filter((tx) => tx.t < 1.1);
+    this.texts = this.texts.filter((tx) => tx.t < 1.2);
     this.shakeAmt = Math.max(0, this.shakeAmt - dt * 40);
     this.flash = Math.max(0, this.flash - dt * 2.5);
+  }
+
+  startEffect(e) {
+    const { x, y } = this.center(e.r, e.c);
+    switch (e.type) {
+      case 'bomb':
+        this.shakeAmt = Math.max(this.shakeAmt, e.radius > 2 ? 12 : 8);
+        this.sparks(x, y, 18, '#ffd166', 9);
+        this.smoke(x, y, 10, 1.6);
+        break;
+      case 'nuke':
+        this.shakeAmt = 16;
+        this.flash = 1;
+        this.sparks(x, y, 30, '#ffffff', 14);
+        break;
+      case 'disco':
+        this.sparks(x, y, 12, PALETTE[e.color].light, 6);
+        break;
+      default:
+        this.sparks(x, y, 8, '#ffd166', 5);
+        this.shakeAmt = Math.max(this.shakeAmt, 3);
+    }
   }
 
   frame(now) {
@@ -585,8 +778,9 @@ export class Renderer {
     }
   }
 
-  drawBoardCell(ctx, cell, r, c) {
-    const s = this.size;
+  // ---------- drawing ----------
+
+  cellPos(cell, r, c) {
     let row = cell.vr ?? r;
     let col = c;
     if (cell.tw) {
@@ -601,28 +795,202 @@ export class Renderer {
         col = cell.tw.fromC + (c - cell.tw.fromC) * e;
       }
     }
+    return { row, col };
+  }
+
+  drawBoardCell(ctx, cell, r, c) {
+    const s = this.size;
+    const { row, col } = this.cellPos(cell, r, c);
     const x = this.ox + (col + 0.5) * s;
     const y = this.oy + (row + 0.5) * s;
     let sx = 1;
     let sy = 1;
     if (this.selected === cell) { sx = sy = 1.1 + Math.sin(this.time * 8) * 0.04; }
     if (cell.pop > 0) { const k = 1 + Math.sin(cell.pop * Math.PI) * 0.22; sx *= k; sy *= k; }
-    if (cell.popIn > 0) { const k = 1 - cell.popIn; sx *= k; sy *= k; }
-    if (cell.squash > 0) { sx *= 1 + cell.squash * 0.08; sy *= 1 - cell.squash * 0.1; }
+    if (cell.popIn > 0) {
+      const k = cell.popDelay > 0 ? 0 : easeOutBack(1 - cell.popIn);
+      sx *= k;
+      sy *= k;
+    }
+    if (cell.squash > 0) {
+      // landing wobble: squash, then a little stretch
+      const w = Math.sin((1 - cell.squash) * Math.PI * 2) * cell.squash;
+      sx *= 1 + w * 0.1;
+      sy *= 1 - w * 0.12;
+    }
     let dx = 0;
     if (cell.shake > 0) dx = Math.sin(cell.shake * 60) * s * 0.08 * (cell.shake / 0.35);
     let dy = 0;
     if (this.hint && this.hint.has(cell)) dy = -Math.abs(Math.sin(this.time * 6)) * s * 0.1;
     ctx.save();
-    ctx.translate(x + dx, y + dy + (cell.squash > 0 ? cell.squash * s * 0.05 : 0));
+    ctx.translate(x + dx, y + dy + (cell.squash > 0 ? cell.squash * s * 0.04 : 0));
     ctx.scale(sx, sy);
-    if (this.selected === cell) {
-      roundRect(ctx, -s * 0.5, -s * 0.5, s, s, s * 0.22);
+    if (this.selected === cell || (this.hint && this.hint.has(cell))) {
+      ctx.save();
+      ctx.shadowColor = '#fff';
+      ctx.shadowBlur = s * 0.35;
+      roundRect(ctx, -s * 0.46, -s * 0.46, s * 0.92, s * 0.92, s * 0.22);
       ctx.fillStyle = 'rgba(255,255,255,0.35)';
       ctx.fill();
+      ctx.restore();
     }
     drawCell(ctx, cell, s, this.time);
+    if (cell.shine !== undefined && cell.kind === 'cube') this.drawShine(ctx, cell.shine);
     ctx.restore();
+  }
+
+  drawShine(ctx, p) {
+    const s = this.size;
+    ctx.save();
+    roundRect(ctx, -s * 0.47, -s * 0.47, s * 0.94, s * 0.94, s * 0.2);
+    ctx.clip();
+    ctx.rotate(-0.6);
+    const x = -s + p * s * 2;
+    const g = ctx.createLinearGradient(x - s * 0.2, 0, x + s * 0.2, 0);
+    g.addColorStop(0, 'rgba(255,255,255,0)');
+    g.addColorStop(0.5, 'rgba(255,255,255,0.55)');
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(x - s * 0.2, -s, s * 0.4, s * 2);
+    ctx.restore();
+  }
+
+  drawDying(ctx, d) {
+    const s = this.size;
+    const t = this.time - d.start;
+    if (t < 0) {
+      // Not reached by the blast yet: sit still, glowing if a disco targets it.
+      this.drawBoardCell(ctx, d.cell, d.r, d.c);
+      return;
+    }
+    const { x, y } = this.center(d.r, d.c);
+    ctx.save();
+    if (d.mode === 'merge') {
+      const p = Math.min(1, t / MERGE_TIME);
+      const e = p * p;
+      const to = this.center(d.toR, d.toC);
+      ctx.translate(x + (to.x - x) * e, y + (to.y - y) * e);
+      const k = 1 - p * 0.5;
+      ctx.scale(k, k);
+      ctx.globalAlpha = 1 - p * 0.3;
+      drawCell(ctx, d.cell, s, this.time);
+    } else {
+      const p = Math.min(1, t / POP_TIME);
+      const k = p < 0.4 ? 1 + 0.25 * (p / 0.4) : 1.25 * (1 - (p - 0.4) / 0.6) ** 0.6;
+      ctx.translate(x, y);
+      ctx.scale(k, k);
+      drawCell(ctx, d.cell, s, this.time);
+      // white flash as it bursts
+      ctx.globalAlpha = p < 0.4 ? p / 0.4 * 0.8 : 0.8 * (1 - (p - 0.4) / 0.6);
+      ctx.globalCompositeOperation = 'lighter';
+      roundRect(ctx, -s * 0.45, -s * 0.45, s * 0.9, s * 0.9, s * 0.22);
+      ctx.fillStyle = 'rgba(255,255,255,0.8)';
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  drawPanel(ctx) {
+    const { rows, cols } = this.board;
+    const s = this.size;
+    const bw = cols * s;
+    const bh = rows * s;
+    ctx.save();
+    ctx.shadowColor = 'rgba(10, 5, 40, 0.5)';
+    ctx.shadowBlur = 24;
+    ctx.shadowOffsetY = 8;
+    roundRect(ctx, this.ox - 10, this.oy - 10, bw + 20, bh + 20, 22);
+    const g = ctx.createLinearGradient(0, this.oy, 0, this.oy + bh);
+    g.addColorStop(0, 'rgba(70, 50, 160, 0.82)');
+    g.addColorStop(1, 'rgba(32, 22, 90, 0.88)');
+    ctx.fillStyle = g;
+    ctx.fill();
+    ctx.restore();
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = this.armed ? `rgba(255,209,102,${0.6 + 0.4 * Math.sin(this.time * 8)})` : 'rgba(255,255,255,0.35)';
+    roundRect(ctx, this.ox - 10, this.oy - 10, bw + 20, bh + 20, 22);
+    ctx.stroke();
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        roundRect(ctx, this.ox + c * s + s * 0.04, this.oy + r * s + s * 0.04, s * 0.92, s * 0.92, s * 0.18);
+        ctx.fillStyle = (r + c) % 2 ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.11)';
+        ctx.fill();
+      }
+    }
+  }
+
+  drawParticles(ctx) {
+    for (const p of this.particles) {
+      const a = Math.min(1, (p.life / p.max) * 2);
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      if (p.kind === 'smoke') {
+        ctx.globalAlpha = 0.35 * (p.life / p.max);
+        ctx.fillStyle = '#e8e4ff';
+        ctx.beginPath();
+        ctx.arc(0, 0, p.size, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (p.kind === 'spark') {
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = a;
+        ctx.rotate(p.rot);
+        ctx.fillStyle = p.color;
+        const k = p.size;
+        ctx.beginPath();
+        for (let i = 0; i < 8; i++) {
+          const ang = (i * Math.PI) / 4;
+          const rad = i % 2 ? k * 0.25 : k;
+          ctx.lineTo(Math.cos(ang) * rad, Math.sin(ang) * rad);
+        }
+        ctx.fill();
+      } else {
+        ctx.globalAlpha = a;
+        ctx.rotate(p.rot);
+        ctx.fillStyle = p.color;
+        if (p.kind === 'chip') {
+          ctx.fillRect(-p.size, -p.size / 2, p.size * 2, p.size);
+        } else {
+          roundRect(ctx, -p.size, -p.size, p.size * 2, p.size * 2, p.size * 0.5);
+          ctx.fill();
+          ctx.fillStyle = 'rgba(255,255,255,0.45)';
+          ctx.fillRect(-p.size * 0.6, -p.size * 0.7, p.size * 0.8, p.size * 0.4);
+        }
+      }
+      ctx.restore();
+    }
+  }
+
+  drawTexts(ctx) {
+    const s = this.size;
+    for (const tx of this.texts) {
+      const t = tx.t;
+      const scale = t < 0.3 ? easeOutBack(t / 0.3) : 1;
+      const rise = t > 0.6 ? (t - 0.6) * s * 2 : 0;
+      ctx.save();
+      ctx.globalAlpha = t > 0.8 ? Math.max(0, 1 - (t - 0.8) / 0.4) : 1;
+      ctx.font = `${Math.round(s * 0.72)}px "Lilita One", system-ui, sans-serif`;
+      const half = ctx.measureText(tx.text).width / 2 + 14;
+      ctx.translate(Math.min(Math.max(tx.x, half), this.w - half), tx.y - rise);
+      ctx.rotate(Math.sin(t * 6) * 0.04);
+      ctx.scale(scale, scale);
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.lineJoin = 'round';
+      ctx.lineWidth = s * 0.18;
+      ctx.strokeStyle = '#2a1170';
+      ctx.strokeText(tx.text, 0, s * 0.04);
+      if (tx.color) {
+        ctx.fillStyle = tx.color;
+      } else {
+        const g = ctx.createLinearGradient(0, -s * 0.35, 0, s * 0.35);
+        g.addColorStop(0, '#fff7ae');
+        g.addColorStop(0.5, '#ffd166');
+        g.addColorStop(1, '#ff8a3d');
+        ctx.fillStyle = g;
+      }
+      ctx.fillText(tx.text, 0, 0);
+      ctx.restore();
+    }
   }
 
   draw() {
@@ -632,73 +1000,28 @@ export class Renderer {
     if (!this.board) return;
     const { rows, cols } = this.board;
     const s = this.size;
-    const bw = cols * s;
-    const bh = rows * s;
 
     ctx.save();
     if (this.shakeAmt > 0) {
       ctx.translate((Math.random() - 0.5) * this.shakeAmt, (Math.random() - 0.5) * this.shakeAmt);
     }
-
-    // board panel
-    roundRect(ctx, this.ox - 8, this.oy - 8, bw + 16, bh + 16, 18);
-    ctx.fillStyle = 'rgba(16, 24, 72, 0.55)';
-    ctx.fill();
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = this.armed ? `rgba(255,209,102,${0.6 + 0.4 * Math.sin(this.time * 8)})` : 'rgba(255,255,255,0.25)';
-    ctx.stroke();
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        if ((r + c) % 2 === 0) {
-          ctx.fillStyle = 'rgba(255,255,255,0.05)';
-          ctx.fillRect(this.ox + c * s, this.oy + r * s, s, s);
-        }
-      }
-    }
+    this.drawPanel(ctx);
 
     ctx.save();
     ctx.beginPath();
-    ctx.rect(this.ox - 4, this.oy - 4, bw + 8, bh + 8);
+    ctx.rect(this.ox - 6, this.oy - 6, cols * s + 12, rows * s + 12);
     ctx.clip();
     // Moving cells first, then the static boxes on top so cubes pass behind them.
     this.board.forEach((cell, r, c) => { if (cell && cell.kind !== 'box' && !cell.tw) this.drawBoardCell(ctx, cell, r, c); });
     this.board.forEach((cell, r, c) => { if (cell?.tw) this.drawBoardCell(ctx, cell, r, c); });
-    for (const g of this.ghosts) this.drawBoardCell(ctx, g.cell, g.r, g.c);
     this.board.forEach((cell, r, c) => { if (cell && cell.kind === 'box') this.drawBoardCell(ctx, cell, r, c); });
+    for (const d of this.dying) this.drawDying(ctx, d);
     for (const e of this.effects) this.drawEffect(ctx, e);
     ctx.restore();
 
-    for (const p of this.particles) {
-      ctx.save();
-      ctx.globalAlpha = Math.min(1, p.life * 2);
-      ctx.translate(p.x, p.y);
-      ctx.rotate(p.rot);
-      ctx.fillStyle = p.color;
-      if (p.square) ctx.fillRect(-p.size, -p.size / 2, p.size * 2, p.size);
-      else { ctx.beginPath(); ctx.arc(0, 0, p.size, 0, Math.PI * 2); ctx.fill(); }
-      ctx.restore();
-    }
+    this.drawParticles(ctx);
     ctx.restore();
-
-    for (const tx of this.texts) {
-      const k = tx.t / 1.1;
-      const scale = Math.min(1, tx.t * 6) * (1 + 0.1 * Math.sin(tx.t * 10));
-      ctx.save();
-      ctx.globalAlpha = 1 - Math.max(0, k - 0.6) / 0.4;
-      ctx.font = `${Math.round(s * 0.62)}px "Lilita One", system-ui, sans-serif`;
-      const half = ctx.measureText(tx.text).width / 2 + 12;
-      ctx.translate(Math.min(Math.max(tx.x, half), this.w - half), tx.y - k * s * 1.5);
-      ctx.scale(scale, scale);
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.lineJoin = 'round';
-      ctx.lineWidth = s * 0.14;
-      ctx.strokeStyle = '#3b1d8f';
-      ctx.strokeText(tx.text, 0, 0);
-      ctx.fillStyle = tx.color;
-      ctx.fillText(tx.text, 0, 0);
-      ctx.restore();
-    }
+    this.drawTexts(ctx);
 
     if (this.flash > 0) {
       ctx.fillStyle = `rgba(255,255,255,${this.flash * 0.7})`;
@@ -706,27 +1029,32 @@ export class Renderer {
     }
   }
 
-  drawBeam(ctx, x, y, dir, p, thickness) {
+  drawRocketTrails(ctx, e, thickness) {
     const s = this.size;
-    const len = Math.max(this.w, this.h) * p * 1.2;
+    const { x, y } = this.center(e.r, e.c);
+    const fade = Math.max(0, 1 - e.t / e.dur);
     ctx.save();
-    ctx.translate(x, y);
-    if (dir === 'v') ctx.rotate(Math.PI / 2);
-    const alpha = 1 - p * 0.6;
-    const g = ctx.createLinearGradient(0, -thickness / 2, 0, thickness / 2);
-    g.addColorStop(0, 'rgba(255,209,102,0)');
-    g.addColorStop(0.5, `rgba(255,255,255,${alpha})`);
-    g.addColorStop(1, 'rgba(255,209,102,0)');
-    ctx.fillStyle = g;
-    ctx.fillRect(-len, -thickness / 2, len * 2, thickness);
-    for (const side of [-1, 1]) {
-      ctx.save();
-      ctx.translate(side * len, 0);
-      if (side < 0) ctx.rotate(Math.PI);
-      drawCell(ctx, { kind: 'rocket', dir: 'h' }, s * 0.9, this.time);
-      ctx.restore();
+    ctx.globalCompositeOperation = 'lighter';
+    for (const h of this.rocketHeads(e)) {
+      const g = ctx.createLinearGradient(x, y, h.x, h.y);
+      g.addColorStop(0, `rgba(255,190,90,${0.1 * fade})`);
+      g.addColorStop(1, `rgba(255,240,200,${0.9 * fade})`);
+      ctx.strokeStyle = g;
+      ctx.lineWidth = thickness;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(h.x, h.y);
+      ctx.stroke();
     }
     ctx.restore();
+    for (const h of this.rocketHeads(e)) {
+      ctx.save();
+      ctx.translate(h.x, h.y);
+      ctx.rotate(h.angle);
+      drawCell(ctx, { kind: 'rocket', dir: 'h' }, s * 0.95, this.time);
+      ctx.restore();
+    }
   }
 
   drawEffect(ctx, e) {
@@ -736,47 +1064,85 @@ export class Renderer {
     const { x, y } = this.center(e.r, e.c);
     switch (e.type) {
       case 'rocket':
-        this.drawBeam(ctx, x, y, e.dir, p, s * 0.6);
-        break;
       case 'cross':
-        this.drawBeam(ctx, x, y, 'h', p, s * 0.7);
-        this.drawBeam(ctx, x, y, 'v', p, s * 0.7);
+        this.drawRocketTrails(ctx, e, s * 0.32);
         break;
-      case 'bigcross':
-        this.drawBeam(ctx, x, y, 'h', p, s * 2.6);
-        this.drawBeam(ctx, x, y, 'v', p, s * 2.6);
+      case 'bigcross': {
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = 0.5 * (1 - p);
+        ctx.fillStyle = '#ffcf7a';
+        ctx.fillRect(0, y - s * 1.5, this.w, s * 3);
+        ctx.fillRect(x - s * 1.5, 0, s * 3, this.h);
+        ctx.restore();
+        this.drawRocketTrails(ctx, e, s * 0.6);
         break;
+      }
       case 'bomb':
       case 'nuke': {
-        const radius = e.type === 'nuke' ? Math.max(this.w, this.h) : s * (e.radius + 1.2);
-        const g = ctx.createRadialGradient(x, y, 0, x, y, radius * p + 1);
-        g.addColorStop(0, `rgba(255,255,255,${0.9 * (1 - p)})`);
-        g.addColorStop(0.6, `rgba(255,170,60,${0.6 * (1 - p)})`);
-        g.addColorStop(1, 'rgba(255,90,40,0)');
+        const radius = (e.type === 'nuke' ? Math.max(this.w, this.h) / s : e.radius + 1) * s;
+        const ring = radius * Math.min(1, e.t / (e.dur * 0.6));
+        // core flash
+        if (e.t < 0.15) {
+          const g = ctx.createRadialGradient(x, y, 0, x, y, s * 1.6);
+          g.addColorStop(0, `rgba(255,255,255,${1 - e.t / 0.15})`);
+          g.addColorStop(1, 'rgba(255,200,80,0)');
+          ctx.fillStyle = g;
+          ctx.beginPath();
+          ctx.arc(x, y, s * 1.6, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        const g = ctx.createRadialGradient(x, y, ring * 0.6, x, y, ring + 1);
+        g.addColorStop(0, 'rgba(255,170,60,0)');
+        g.addColorStop(1, `rgba(255,170,60,${0.45 * (1 - p)})`);
         ctx.fillStyle = g;
         ctx.beginPath();
-        ctx.arc(x, y, radius * p + 1, 0, Math.PI * 2);
+        ctx.arc(x, y, ring + 1, 0, Math.PI * 2);
         ctx.fill();
-        ctx.lineWidth = s * 0.15 * (1 - p);
-        ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+        ctx.lineWidth = s * 0.18 * (1 - p);
+        ctx.strokeStyle = `rgba(255,255,255,${1 - p})`;
         ctx.stroke();
+        ctx.restore();
         break;
       }
       case 'disco': {
+        const light = PALETTE[e.color].light;
         ctx.save();
-        ctx.lineWidth = s * 0.08;
-        ctx.strokeStyle = PALETTE[e.color].light;
-        ctx.globalAlpha = 1 - p;
-        for (const [ty, tx] of e.targets) {
+        ctx.globalCompositeOperation = 'lighter';
+        e.targets.forEach(([ty, tx], i) => {
+          const hitAt = 0.12 + i * 0.018;
+          if (e.t < hitAt - 0.08 || e.t > hitAt + 0.15) return;
           const t = this.center(ty, tx);
+          const reach = Math.min(1, (e.t - (hitAt - 0.08)) / 0.08);
+          const ex = x + (t.x - x) * reach;
+          const ey = y + (t.y - y) * reach;
+          // jagged bolt, re-randomised every frame so it flickers
           ctx.beginPath();
           ctx.moveTo(x, y);
-          ctx.lineTo(x + (t.x - x) * Math.min(1, p * 2.5), y + (t.y - y) * Math.min(1, p * 2.5));
+          const steps = 6;
+          for (let k = 1; k < steps; k++) {
+            const f = k / steps;
+            ctx.lineTo(x + (ex - x) * f + (Math.random() - 0.5) * s * 0.35, y + (ey - y) * f + (Math.random() - 0.5) * s * 0.35);
+          }
+          ctx.lineTo(ex, ey);
+          ctx.lineWidth = s * 0.12;
+          ctx.strokeStyle = light;
+          ctx.globalAlpha = 0.7;
           ctx.stroke();
-        }
+          ctx.lineWidth = s * 0.04;
+          ctx.strokeStyle = '#fff';
+          ctx.globalAlpha = 1;
+          ctx.stroke();
+        });
+        ctx.restore();
+        ctx.save();
         ctx.translate(x, y);
-        ctx.scale(1 + p * 0.5, 1 + p * 0.5);
-        drawCell(ctx, { kind: 'disco', color: e.color }, s, this.time * 4);
+        const k = 1.1 + Math.sin(e.t * 30) * 0.06;
+        ctx.scale(k, k);
+        ctx.rotate(e.t * 8);
+        drawCell(ctx, { kind: 'disco', color: e.color }, s, this.time);
         ctx.restore();
         break;
       }

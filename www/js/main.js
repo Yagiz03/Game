@@ -7,6 +7,7 @@ import * as store from './storage.js';
 import { TOTAL_LEVELS, getLevel, COLOR_NAMES } from './levels.js';
 import { GameSession, goalIcon } from './game.js';
 import { showRewardedAd } from './ads.js';
+import { addMotes } from './fx.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -59,6 +60,7 @@ class App {
     $('bst-shuffle').addEventListener('click', () => this.session?.useShuffle());
     $('lives-pill').addEventListener('click', () => this.showLives());
 
+    addMotes($('app'));
     this.showHome();
     setInterval(() => this.tick(), 1000);
   }
@@ -304,8 +306,8 @@ class App {
       title: 'Mağaza',
       body: [
         el('p', { class: 'muted' }, `Coin: ${s.coins} 🪙`),
-        item('🔨', 'Çekiç ×3', `Elinde: ${s.hammer}`, PRICES.hammer, (st) => { st.hammer += 3; }),
-        item('🔀', 'Karıştır ×3', `Elinde: ${s.shuffle}`, PRICES.shuffle, (st) => { st.shuffle += 3; }),
+        item(el('img', { src: 'img/hammer.png', class: 'shop-img', alt: '' }), 'Çekiç ×3', `Elinde: ${s.hammer}`, PRICES.hammer, (st) => { st.hammer += 3; }),
+        item(el('img', { src: 'img/shuffle.png', class: 'shop-img', alt: '' }), 'Karıştır ×3', `Elinde: ${s.shuffle}`, PRICES.shuffle, (st) => { st.shuffle += 3; }),
         item('❤️', 'Canları Doldur', `${s.lives}/${store.MAX_LIVES}`, PRICES.lives, (st) => { st.lives = store.MAX_LIVES; }, s.lives >= store.MAX_LIVES),
         el('div', { class: 'shop-item' },
           el('span', { class: 'shop-icon' }, '🎬'),

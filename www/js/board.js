@@ -314,13 +314,18 @@ export class Board {
         if (this.grid[y][x]) this.damageBox(y, x, res, 0);
       }
       res.groupSize = Math.max(res.groupSize, group.keys.size);
-      if (kind) made.push({ kind, color, dir: longest.dir, spot });
+      if (kind) {
+        made.push({ kind, color, dir: longest.dir, spot });
+        // The matched cubes fly into the new booster (renderer animation).
+        res.merges.push({ r: spot[0], c: spot[1], from: [...group.keys].map((k) => [Math.floor(k / this.cols), k % this.cols]) });
+      }
     }
     for (const { kind, color, dir, spot: [r, c] } of made) {
       if (this.grid[r][c]) continue;
       const cell = kind === 'disco' ? disco(color) : kind === 'bomb' ? bomb() : rocket(dir);
       this.grid[r][c] = cell;
       res.created = { cell, r, c };
+      res.createdAll.push({ cell, r, c });
     }
     return res;
   }
@@ -373,6 +378,8 @@ export class Board {
       damaged: [],
       effects: [],
       created: null,
+      createdAll: [],
+      merges: [],
       groupSize: 0,
       combo: false,
       collected: { colors: Array(MAX_COLORS).fill(0), boxes: 0 },
