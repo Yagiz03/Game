@@ -51,12 +51,17 @@ gerçek oyuncu verisiyle (seviye başına kazanma oranı, terk etme) yapılmalı
 
 ## Görseller
 
-`www/img/` altındaki sprite'lar ve arka plan yapay zekâ ile üretildi (Higgsfield, Z Image
-modeli). Ham görsellerin arka planı `tools/cut_sprites.py` ile temizlenip 256×256 şeffaf
-PNG'ye dönüştürüldü:
+`www/img/` altındaki sprite'lar ve arka plan yapay zekâ ile üretildi (Hugging Face üzerinde
+FLUX.1-schnell; `--model qwen` ile Qwen-Image de kullanılabilir). `tools/gen_sprites.py` ham
+görselleri modellerin ZeroGPU Space'leri üzerinden üretir (yalnızca `HF_TOKEN` gerekir, ücretsiz
+hesapta günlük GPU kotası var). Ham görsellerin arka planı `tools/cut_sprites.py` ile temizlenip
+256×256 şeffaf PNG'ye dönüştürülür:
 
 ```bash
-python3 tools/cut_sprites.py HAM_GORSEL_KLASORU   # cube0..4, box, box2, rocket, bomb, disco, bg
+pip install gradio_client numpy pillow
+HF_TOKEN=... python3 tools/gen_sprites.py HAM_GORSEL_KLASORU            # hepsi
+HF_TOKEN=... python3 tools/gen_sprites.py HAM_GORSEL_KLASORU cube4 bg   # yalnızca bazıları
+python3 tools/cut_sprites.py HAM_GORSEL_KLASORU   # cube0..4, box, box2, rocket, bomb, disco, hammer, shuffle, bg
 ```
 
 Bir sprite yüklenemezse oyun o parçayı kodla çizilmiş eski haliyle gösterir. Yayından önce

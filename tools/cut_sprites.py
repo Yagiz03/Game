@@ -4,8 +4,9 @@ Usage: python3 tools/cut_sprites.py RAW_DIR
 
 RAW_DIR holds the raw AI renders named after the sprite they become
 (cube0.png ... cube4.png, box.png, box2.png, rocket.png, bomb.png, disco.png,
-bg.png). The background colour is read from the image border and flood-filled
-away from the edges, so a plain white or grey studio backdrop and its soft
+hammer.png, shuffle.png, bg.png), as rendered by tools/gen_sprites.py. The
+background colour is read from the image border and flood-filled away from
+the edges, so a plain white or grey studio backdrop and its soft
 shadow are removed while light areas inside the object are kept.
 """
 
@@ -146,13 +147,15 @@ def main(raw):
     raw = Path(raw)
     OUT.mkdir(parents=True, exist_ok=True)
     jobs = {f"cube{i}": {"rounded": True} for i in range(5)}
-    jobs["cube3"]["saturate"] = 1.35  # the yellow render came out pastel
+    jobs["cube4"]["saturate"] = 1.6  # the purple render came out pastel
     jobs.update({
         "box": {},
         "box2": {},
         "rocket": {"tolerance": 30},
         "bomb": {"tolerance": 30, "shadows": False, "keep": 0.3, "circle": "keep_top"},
         "disco": {"circle": True, "shadows": False},
+        "hammer": {"tolerance": 30},
+        "shuffle": {"tolerance": 30},
     })
     for name, opts in jobs.items():
         src = raw / f"{name}.png"
